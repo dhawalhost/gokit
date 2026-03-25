@@ -25,7 +25,7 @@ func NewRedisStore(client *redis.Client, windowDuration time.Duration) *RedisSto
 // ARGV[1]: current timestamp in milliseconds
 // ARGV[2]: window start (current - windowMs)
 // ARGV[3]: max requests (burst)
-// ARGV[4]: window duration in milliseconds (for key expiry)
+// ARGV[4]: window duration in milliseconds (for key expiry).
 const slidingWindowScript = `
 local key    = KEYS[1]
 local now    = tonumber(ARGV[1])
