@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-commit] Running gofmt..."
+gofmt -w .
+
+echo "[pre-commit] Running golangci-lint..."
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --tests=false --timeout=15m ./...
+
+echo "[pre-commit] OK"
