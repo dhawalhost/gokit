@@ -18,7 +18,7 @@ type Store interface {
 // InMemoryStore is a thread-safe in-memory rate-limit store backed by
 // golang.org/x/time/rate token buckets keyed by request key.
 type InMemoryStore struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	limiters sync.Map // map[string]*rate.Limiter
 }
 

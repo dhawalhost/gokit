@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	govalidator "github.com/go-playground/validator/v10"
 	"github.com/dhawalhost/gokit/validator"
+	govalidator "github.com/go-playground/validator/v10"
 )
 
 type createUserReq struct {
