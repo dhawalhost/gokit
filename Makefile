@@ -1,4 +1,4 @@
-.PHONY: test test-race lint tidy vet fmt build vuln cover
+.PHONY: test test-race lint tidy vet fmt build vuln cover hooks
 
 # Run all unit tests.
 test:
@@ -76,3 +76,9 @@ build:
 # Check for known vulnerabilities (requires: go install golang.org/x/vuln/cmd/govulncheck@latest).
 vuln:
 	govulncheck ./...
+
+# Install repository git hooks.
+hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "Git hooks installed from .githooks/"

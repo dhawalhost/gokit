@@ -82,10 +82,8 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: latest
-          args: --timeout=5m
+        run: make lint
+
 
   # ─── Vulnerability Check ────────────────────────────────────────────────────
   vuln:
