@@ -7,8 +7,6 @@ linters:
     - govet
     - staticcheck
     - revive
-    - gofmt
-    - goimports
     - unparam
     - bodyclose
     - misspell
