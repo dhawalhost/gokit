@@ -1,3 +1,5 @@
+version: "2"
+
 linters:
   enable:
     - errcheck
@@ -7,16 +9,16 @@ linters:
     - revive
     - gofmt
     - goimports
-    - exhaustive
     - unparam
     - bodyclose
-    - noctx
+    - misspell
+    - godot
 
-linters-settings:
-  revive:
-    rules:
-      - name: exported
-        severity: warning
+  settings:
+    revive:
+      rules:
+        - name: exported
+          severity: warning
 
 issues:
   exclude-rules:
