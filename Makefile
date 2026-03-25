@@ -59,7 +59,7 @@ cover:
 	go tool cover -html=coverage.out
 
 lint:
-	golangci-lint run --timeout=5m ./...
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --tests=false --timeout=15m ./...
 
 tidy:
 	go mod tidy

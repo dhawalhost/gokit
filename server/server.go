@@ -16,6 +16,7 @@ import (
 // HTTPServer wraps net/http.Server with a chi router and graceful shutdown.
 type HTTPServer struct {
 	mux             *chi.Mux
+	srv             *http.Server
 	addr            string
 	readTimeout     time.Duration
 	writeTimeout    time.Duration
@@ -54,20 +55,21 @@ func (s *HTTPServer) Use(middleware ...func(http.Handler) http.Handler) {
 // Run starts the HTTP server and blocks until ctx is cancelled or a signal
 // (SIGTERM/SIGINT) is received, then gracefully shuts down.
 func (s *HTTPServer) Run(ctx context.Context) error {
-	srv := &http.Server{
-		Addr:         s.addr,
-		Handler:      s.mux,
-		ReadTimeout:  s.readTimeout,
-		WriteTimeout: s.writeTimeout,
-		IdleTimeout:  s.idleTimeout,
+	s.srv = &http.Server{
+		Addr:              s.addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: s.readTimeout,
+		ReadTimeout:       s.readTimeout,
+		WriteTimeout:      s.writeTimeout,
+		IdleTimeout:       s.idleTimeout,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
 		if s.certFile != "" && s.keyFile != "" {
-			errCh <- srv.ListenAndServeTLS(s.certFile, s.keyFile)
+			errCh <- s.srv.ListenAndServeTLS(s.certFile, s.keyFile)
 		} else {
-			errCh <- srv.ListenAndServe()
+			errCh <- s.srv.ListenAndServe()
 		}
 	}()
 
@@ -91,8 +93,11 @@ func (s *HTTPServer) Shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, s.shutdownTimeout)
 	defer cancel()
 
-	srv := &http.Server{Addr: s.addr, Handler: s.mux}
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if s.srv == nil {
+		return nil
+	}
+
+	if err := s.srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("server: shutdown: %w", err)
 	}
 	return nil
