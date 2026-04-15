@@ -9,17 +9,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+
+	mw "github.com/dhawalhost/gokit/middleware"
 )
-
-type metricsRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (m *metricsRecorder) WriteHeader(status int) {
-	m.status = status
-	m.ResponseWriter.WriteHeader(status)
-}
 
 // Metrics returns a middleware that records Prometheus metrics for each request.
 // InitMetrics must be called before this middleware is used.
@@ -30,11 +22,11 @@ func Metrics() func(http.Handler) http.Handler {
 				HTTPRequestsInFlight.Inc()
 				defer HTTPRequestsInFlight.Dec()
 			}
-			rec := &metricsRecorder{ResponseWriter: w, status: http.StatusOK}
+			rec := &mw.StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 			start := time.Now()
 			next.ServeHTTP(rec, r)
 			elapsed := time.Since(start).Seconds()
-			status := strconv.Itoa(rec.status)
+			status := strconv.Itoa(rec.Status)
 			if HTTPRequestDuration != nil {
 				HTTPRequestDuration.WithLabelValues(r.Method, r.URL.Path, status).Observe(elapsed)
 			}
@@ -56,11 +48,11 @@ func Tracing(serviceName string) func(http.Handler) http.Handler {
 				attribute.String("http.method", r.Method),
 				attribute.String("http.path", r.URL.Path),
 			)
-			rec := &metricsRecorder{ResponseWriter: w, status: http.StatusOK}
+			rec := &mw.StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 			next.ServeHTTP(rec, r.WithContext(ctx))
-			span.SetAttributes(attribute.Int("http.status_code", rec.status))
-			if rec.status >= 500 {
-				span.SetStatus(codes.Error, http.StatusText(rec.status))
+			span.SetAttributes(attribute.Int("http.status_code", rec.Status))
+			if rec.Status >= 500 {
+				span.SetStatus(codes.Error, http.StatusText(rec.Status))
 			}
 		})
 	}

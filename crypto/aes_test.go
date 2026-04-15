@@ -70,3 +70,29 @@ func TestEncryptBadKey(t *testing.T) {
 		t.Fatal("expected error for bad key length")
 	}
 }
+
+func TestEncryptStringBadKey(t *testing.T) {
+	_, err := crypto.EncryptString("plaintext", []byte("short"))
+	if err == nil {
+		t.Fatal("expected error for bad key length")
+	}
+}
+
+func TestDecryptStringInvalidHex(t *testing.T) {
+	_, err := crypto.DecryptString("not-valid-hex!!", testKey)
+	if err == nil {
+		t.Fatal("expected error for invalid hex string")
+	}
+}
+
+func TestDecryptStringBadKey(t *testing.T) {
+	ct, err := crypto.EncryptString("plaintext", testKey)
+	if err != nil {
+		t.Fatalf("EncryptString: %v", err)
+	}
+	wrongKey := []byte("00000000000000000000000000000000")
+	_, err = crypto.DecryptString(ct, wrongKey)
+	if err == nil {
+		t.Fatal("expected error when decrypting with wrong key")
+	}
+}

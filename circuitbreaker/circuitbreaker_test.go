@@ -97,6 +97,21 @@ func TestHalfOpenFailureReopens(t *testing.T) {
 	}
 }
 
+func TestExecutionTimeout(t *testing.T) {
+	cb := circuitbreaker.New(circuitbreaker.Config{
+		Name:             "test",
+		MaxFailures:      5,
+		ExecutionTimeout: 10 * time.Millisecond,
+	})
+	err := cb.Execute(func() error {
+		time.Sleep(200 * time.Millisecond)
+		return nil
+	})
+	if !errors.Is(err, circuitbreaker.ErrExecutionTimeout) {
+		t.Fatalf("expected ErrExecutionTimeout, got %v", err)
+	}
+}
+
 func TestOnStateChangeCallback(t *testing.T) {
 	var transitions []string
 	cb := circuitbreaker.New(circuitbreaker.Config{

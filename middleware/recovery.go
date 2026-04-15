@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"runtime/debug"
@@ -21,12 +20,7 @@ func Recovery(log *zap.Logger) func(http.Handler) http.Handler {
 						zap.String("stack", string(debug.Stack())),
 						zap.String("request_id", RequestIDFromContext(r.Context())),
 					)
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusInternalServerError)
-					_ = json.NewEncoder(w).Encode(map[string]string{
-						"code":    "INTERNAL_ERROR",
-						"message": "an unexpected error occurred",
-					})
+					writeJSONError(w, http.StatusInternalServerError, `{"code":"INTERNAL_ERROR","message":"an unexpected error occurred"}`)
 				}
 			}()
 			next.ServeHTTP(w, r)

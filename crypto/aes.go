@@ -12,7 +12,11 @@ import (
 
 // Encrypt encrypts plaintext using AES-256-GCM with the provided key.
 // The nonce is prepended to the returned ciphertext.
+// The key must be exactly 32 bytes for AES-256.
 func Encrypt(plaintext, key []byte) ([]byte, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w: got %d bytes", ErrInvalidKeySize, len(key))
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: aes new cipher: %w", err)
@@ -30,7 +34,11 @@ func Encrypt(plaintext, key []byte) ([]byte, error) {
 }
 
 // Decrypt decrypts ciphertext produced by Encrypt.
+// The key must be exactly 32 bytes for AES-256.
 func Decrypt(ciphertext, key []byte) ([]byte, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w: got %d bytes", ErrInvalidKeySize, len(key))
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: aes new cipher: %w", err)
@@ -41,7 +49,7 @@ func Decrypt(ciphertext, key []byte) ([]byte, error) {
 	}
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("crypto: ciphertext too short")
+		return nil, ErrCiphertextTooShort
 	}
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)

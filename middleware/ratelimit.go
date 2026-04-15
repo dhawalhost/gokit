@@ -28,7 +28,7 @@ func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 			key := cfg.KeyFunc(r)
 			allowed, err := cfg.Store.Allow(r.Context(), key, cfg.RequestsPerSecond, cfg.Burst)
 			if err != nil || !allowed {
-				http.Error(w, `{"code":"TOO_MANY_REQUESTS","message":"rate limit exceeded"}`, http.StatusTooManyRequests)
+				writeJSONError(w, http.StatusTooManyRequests, `{"code":"TOO_MANY_REQUESTS","message":"rate limit exceeded"}`)
 				return
 			}
 			next.ServeHTTP(w, r)

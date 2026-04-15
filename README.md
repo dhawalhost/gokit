@@ -2,8 +2,11 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/dhawalhost/gokit.svg)](https://pkg.go.dev/github.com/dhawalhost/gokit)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dhawalhost/gokit)](https://goreportcard.com/report/github.com/dhawalhost/gokit)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://go.dev/)
 
 **gokit** is the single-source-of-truth shared infrastructure library for all microservices in the `dhawalhost` ecosystem (leapmailr, wardseal, talentcurate, leverflag, and future services).
+
 
 ---
 
@@ -11,8 +14,9 @@
 
 - **Zero lock-in** — every abstraction is thin; escape hatches are always available.
 - **Composable** — all middleware is `func(http.Handler) http.Handler`; all config is explicit function calls.
-- **Production-ready** — graceful shutdown, circuit-breaking, structured logging, distributed tracing, Prometheus metrics.
+- **Production-ready** — graceful shutdown, circuit-breaking, structured logging, distributed tracing, Prometheus metrics, security hardened.
 - **Type-safe** — Go generics used in `response` and `pagination` to eliminate type assertions.
+- **Secure by default** — AES-256-GCM, JWT validation, SQL injection prevention, rate limiting, secure headers.
 
 ---
 
@@ -37,6 +41,7 @@
 | `observability` | Prometheus metrics, OTLP tracing, and chi-compatible middlewares |
 | `pagination` | Offset and cursor pagination parsed from HTTP requests |
 | `idgen` | UUID v4/v7, ULID, NanoID generation |
+| `bloomfilter` | In-memory and Redis-backed Bloom filter for probabilistic set membership |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
@@ -294,6 +299,105 @@ if err := v.Bind(r, &req); err != nil {
     errors.WriteError(w, r, errors.BadRequest("INVALID_INPUT", err.Error()))
     return
 }
+```
+
+### `bloomfilter`
+
+```go
+import "github.com/dhawalhost/gokit/bloomfilter"
+
+// In-memory filter — single process, zero external deps.
+f, err := bloomfilter.New(
+    100_000, // expected distinct items
+    0.01,    // 1 % false-positive rate
+)
+f.AddString("user:42")
+f.ContainsString("user:42") // true
+f.ContainsString("user:99") // false (or very rarely true)
+
+// Count, inspect fill, and reset.
+fmt.Println(f.Count(), f.OnesCount(), f.EstimatedFalsePositiveRate())
+f.Reset()
+
+// Persist / restore via binary encoding.
+data, _ := f.MarshalBinary()
+var f2 bloomfilter.Filter
+f2.UnmarshalBinary(data)
+
+// Redis-backed filter — shared across services / replicas.
+store, err := bloomfilter.NewRedisStore(redisClient, "bf:emails", 100_000, 0.01)
+store.AddString(ctx, "alice@example.com")
+found, _ := store.ContainsString(ctx, "alice@example.com")
+
+// Optional TTL (e.g. for deduplication windows).
+store.Expire(ctx, 24*time.Hour)
+store.Delete(ctx) // reset
+```
+
+**Tuning guide:**
+- Lower `falsePositiveRate` → more bits / memory, fewer false positives.
+- Higher `expectedItems` → larger bit array; accuracy is maintained.
+- Use `EstimatedFalsePositiveRate()` at runtime to decide when to rebuild the filter.
+
+---
+
+## 📚 Examples & Documentation
+
+### Comprehensive Examples
+
+The `examples/` directory contains 5 complete, production-ready applications:
+
+1. **[basic-server](examples/README.md#1-basic-server)**: Minimal HTTP server with health checks and metrics
+2. **[database-crud](examples/README.md#2-database-crud)**: RESTful API with PostgreSQL, GORM, and pagination
+3. **[auth-jwt](examples/README.md#3-jwt-authentication)**: JWT authentication with protected routes
+4. **[cache-ratelimit](examples/README.md#4-cache--rate-limiting)**: Redis caching and IP-based rate limiting
+5. **[circuit-breaker](examples/README.md#5-circuit-breaker)**: Fault-tolerant external service calls
+
+See [examples/README.md](examples/README.md) for detailed usage instructions and testing commands.
+
+### Additional Documentation
+
+- **[SECURITY.md](SECURITY.md)**: Security policy, vulnerability reporting, and best practices
+- **[CHANGELOG.md](CHANGELOG.md)**: Detailed version history and migration guides
+- **[INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)**: Integration testing guide with Docker setup
+- **[RELEASE_v0.1.0.md](RELEASE_v0.1.0.md)**: Complete v0.1.0 release notes
+
+### API Documentation
+
+Full API documentation is available at [pkg.go.dev/github.com/dhawalhost/gokit](https://pkg.go.dev/github.com/dhawalhost/gokit)
+
+---
+
+## 🧪 Testing
+
+### Unit Tests
+```bash
+make test          # Run all unit tests
+make test-race     # Run with race detector
+make cover         # Generate coverage report
+```
+
+### Integration Tests
+```bash
+# Start required services (PostgreSQL, Redis)
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=testpass postgres:15-alpine
+docker run -d -p 6379:6379 redis:7-alpine
+
+# Run integration tests
+export TEST_DATABASE_DSN="postgres://postgres:testpass@localhost:5432/postgres?sslmode=disable"
+export TEST_REDIS_ADDR="localhost:6379"
+make test-integration
+```
+
+See [INTEGRATION_TESTS.md](INTEGRATION_TESTS.md) for detailed setup instructions.
+
+### Other Commands
+```bash
+make lint          # Run golangci-lint
+make vet           # Run go vet
+make fmt           # Format code
+make build         # Build all packages
+make vuln          # Check for vulnerabilities
 ```
 
 ---

@@ -11,7 +11,7 @@ type Cache interface {
 	// Get retrieves the string value for key.
 	Get(ctx context.Context, key string) (string, error)
 	// Set stores value under key with the given TTL.
-	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Set(ctx context.Context, key string, value any, ttl time.Duration) error
 	// Delete removes the given keys.
 	Delete(ctx context.Context, keys ...string) error
 	// Exists reports whether key exists.

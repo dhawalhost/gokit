@@ -4,10 +4,9 @@ package idgen
 import (
 	"fmt"
 
+	"github.com/google/uuid"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/oklog/ulid/v2"
-
-	"github.com/google/uuid"
 )
 
 // NewUUID generates a new random UUID v4 string.

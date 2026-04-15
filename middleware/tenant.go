@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-type tenantIDKey struct{}
+type tenantIDContextKey struct{}
 
 // TenantID returns a middleware that reads the X-Tenant-ID header and stores its
 // value in the request context.
@@ -13,7 +13,7 @@ func TenantID() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tid := r.Header.Get("X-Tenant-ID")
-			ctx := context.WithValue(r.Context(), tenantIDKey{}, tid)
+			ctx := context.WithValue(r.Context(), tenantIDContextKey{}, tid)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -21,6 +21,6 @@ func TenantID() func(http.Handler) http.Handler {
 
 // TenantIDFromContext retrieves the tenant ID stored by the TenantID middleware.
 func TenantIDFromContext(ctx context.Context) (string, bool) {
-	tid, ok := ctx.Value(tenantIDKey{}).(string)
+	tid, ok := ctx.Value(tenantIDContextKey{}).(string)
 	return tid, ok && tid != ""
 }

@@ -18,7 +18,7 @@ type JWTConfig struct {
 	ContextKey string
 }
 
-type jwtClaimsKey struct{ key string }
+type jwtClaimsContextKey struct{ key string }
 
 // JWT returns a middleware that validates Bearer tokens using HS256.
 // On success the jwt.MapClaims are stored in the request context.
@@ -33,7 +33,7 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-				http.Error(w, `{"code":"UNAUTHORIZED","message":"missing or invalid authorization header"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, `{"code":"UNAUTHORIZED","message":"missing or invalid authorization header"}`)
 				return
 			}
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
@@ -44,15 +44,15 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 				return cfg.SecretKey, nil
 			})
 			if err != nil || !token.Valid {
-				http.Error(w, `{"code":"UNAUTHORIZED","message":"invalid token"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, `{"code":"UNAUTHORIZED","message":"invalid token"}`)
 				return
 			}
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
-				http.Error(w, `{"code":"UNAUTHORIZED","message":"invalid token claims"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, `{"code":"UNAUTHORIZED","message":"invalid token claims"}`)
 				return
 			}
-			ctx := context.WithValue(r.Context(), jwtClaimsKey{cfg.ContextKey}, claims)
+			ctx := context.WithValue(r.Context(), jwtClaimsContextKey{cfg.ContextKey}, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -60,6 +60,6 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 
 // ClaimsFromContext retrieves JWT claims stored by the JWT middleware.
 func ClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
-	claims, ok := ctx.Value(jwtClaimsKey{"claims"}).(jwt.MapClaims)
+	claims, ok := ctx.Value(jwtClaimsContextKey{"claims"}).(jwt.MapClaims)
 	return claims, ok
 }

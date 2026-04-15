@@ -96,3 +96,11 @@ func TestRegisterCustom(t *testing.T) {
 		t.Fatalf("RegisterCustom: %v", err)
 	}
 }
+
+func TestRegisterCustomError(t *testing.T) {
+	v := validator.New()
+	err := v.RegisterCustom("", func(_ govalidator.FieldLevel) bool { return true })
+	if err == nil {
+		t.Fatal("expected error for empty tag")
+	}
+}

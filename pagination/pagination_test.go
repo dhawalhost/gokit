@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"testing"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/dhawalhost/gokit/pagination"
 )
 
@@ -112,5 +115,21 @@ func TestParseCursorParamsLimitMax(t *testing.T) {
 	cp := pagination.ParseCursorParams(makeRequest("limit=999"))
 	if cp.Limit != 20 {
 		t.Errorf("expected capped limit=20, got %d", cp.Limit)
+	}
+}
+
+func TestApply(t *testing.T) {
+	db := &gorm.DB{
+		Config: &gorm.Config{DryRun: true},
+	}
+	db.Statement = &gorm.Statement{
+		DB:      db,
+		Clauses: map[string]clause.Clause{},
+	}
+
+	p := pagination.OffsetParams{Page: 2, PageSize: 10}
+	result := p.Apply(db)
+	if result == nil {
+		t.Fatal("Apply returned nil")
 	}
 }

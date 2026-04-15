@@ -38,7 +38,7 @@ func RandomHex(n int) (string, error) {
 // RandomInt returns a random int64 in [min, max].
 func RandomInt(min, max int64) (int64, error) {
 	if max <= min {
-		return 0, fmt.Errorf("crypto: max must be greater than min")
+		return 0, ErrMaxLessThanMin
 	}
 	diff := big.NewInt(max - min + 1)
 	n, err := rand.Int(rand.Reader, diff)

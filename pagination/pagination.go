@@ -6,8 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/dhawalhost/gokit/response"
 	"gorm.io/gorm"
+
+	"github.com/dhawalhost/gokit/response"
 )
 
 // OffsetParams holds parsed offset-pagination parameters.

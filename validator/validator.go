@@ -23,7 +23,7 @@ func New() *Validator {
 }
 
 // Bind decodes the JSON body of r into dst and then validates it.
-func (v *Validator) Bind(r *http.Request, dst interface{}) error {
+func (v *Validator) Bind(r *http.Request, dst any) error {
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		return fmt.Errorf("validator: decode: %w", err)
 	}
@@ -31,7 +31,7 @@ func (v *Validator) Bind(r *http.Request, dst interface{}) error {
 }
 
 // Validate runs struct validation on dst.
-func (v *Validator) Validate(dst interface{}) error {
+func (v *Validator) Validate(dst any) error {
 	if err := v.v.Struct(dst); err != nil {
 		return fmt.Errorf("validator: validate: %w", err)
 	}

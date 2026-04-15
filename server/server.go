@@ -42,6 +42,12 @@ func New(opts ...Option) *HTTPServer {
 	return s
 }
 
+// Handler returns the underlying http.Handler (the chi router).
+// This is useful for testing without binding a real network port.
+func (s *HTTPServer) Handler() http.Handler {
+	return s.mux
+}
+
 // Mount mounts an http.Handler at the given pattern.
 func (s *HTTPServer) Mount(pattern string, handler http.Handler) {
 	s.mux.Mount(pattern, handler)

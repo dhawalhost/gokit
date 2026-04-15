@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dhawalhost/gokit/config"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/dhawalhost/gokit/config"
 )
 
 // RedisCache is a Cache backed by Redis.
@@ -16,11 +17,35 @@ type RedisCache struct {
 
 // NewRedis creates a new RedisCache from the given config.
 func NewRedis(cfg config.RedisConfig) (*RedisCache, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
+	opts := &redis.Options{
+		Addr:         cfg.Addr,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		PoolSize:     cfg.PoolSize,
+		PoolTimeout:  cfg.PoolTimeout,
+	}
+
+	// Set default timeouts if not configured
+	if opts.DialTimeout == 0 {
+		opts.DialTimeout = 5 * time.Second
+	}
+	if opts.ReadTimeout == 0 {
+		opts.ReadTimeout = 3 * time.Second
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 3 * time.Second
+	}
+	if opts.PoolSize == 0 {
+		opts.PoolSize = 10
+	}
+	if opts.PoolTimeout == 0 {
+		opts.PoolTimeout = 4 * time.Second
+	}
+
+	client := redis.NewClient(opts)
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		return nil, fmt.Errorf("cache: redis ping: %w", err)
 	}
@@ -45,7 +70,7 @@ func (r *RedisCache) Get(ctx context.Context, key string) (string, error) {
 }
 
 // Set stores value under key with the given TTL.
-func (r *RedisCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (r *RedisCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	if err := r.client.Set(ctx, key, value, ttl).Err(); err != nil {
 		return fmt.Errorf("cache: set %q: %w", key, err)
 	}
@@ -73,6 +98,14 @@ func (r *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 func (r *RedisCache) Flush(ctx context.Context) error {
 	if err := r.client.FlushDB(ctx).Err(); err != nil {
 		return fmt.Errorf("cache: flush: %w", err)
+	}
+	return nil
+}
+
+// Close closes the Redis client connection.
+func (r *RedisCache) Close() error {
+	if err := r.client.Close(); err != nil {
+		return fmt.Errorf("cache: close: %w", err)
 	}
 	return nil
 }

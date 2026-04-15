@@ -114,6 +114,13 @@ func TestNewNanoIDSize(t *testing.T) {
 	}
 }
 
+func TestNewNanoIDSizeError(t *testing.T) {
+	_, err := idgen.NewNanoIDSize(-1)
+	if err == nil {
+		t.Fatal("expected error for negative NanoID size")
+	}
+}
+
 func TestNanoIDsAreUnique(t *testing.T) {
 	ids := make(map[string]struct{})
 	for i := 0; i < 100; i++ {

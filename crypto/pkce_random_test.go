@@ -79,3 +79,17 @@ func TestRandomIntBadRange(t *testing.T) {
 		t.Fatal("expected error for invalid range")
 	}
 }
+
+func TestRandomString(t *testing.T) {
+	s, err := crypto.RandomString(16)
+	if err != nil {
+		t.Fatalf("RandomString: %v", err)
+	}
+	if len(s) != 16 {
+		t.Errorf("expected length 16, got %d", len(s))
+	}
+	s2, _ := crypto.RandomString(16)
+	if s == s2 {
+		t.Error("expected two distinct random strings")
+	}
+}

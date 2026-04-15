@@ -6,17 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/dhawalhost/gokit/middleware"
 	"github.com/dhawalhost/gokit/ratelimit"
 	"go.uber.org/zap"
 )
 
-// noopHandler is a simple HTTP handler that returns 200.
 var noopHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 })
-
-// ─── RequestID ───────────────────────────────────────────────────────────────
 
 func TestRequestIDGeneratesID(t *testing.T) {
 	w := httptest.NewRecorder()
@@ -63,8 +62,6 @@ func TestRequestIDFromContextEmpty(t *testing.T) {
 	}
 }
 
-// ─── SecureHeaders ───────────────────────────────────────────────────────────
-
 func TestSecureHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	r, _ := http.NewRequest(http.MethodGet, "/", nil)
@@ -84,8 +81,6 @@ func TestSecureHeaders(t *testing.T) {
 		}
 	}
 }
-
-// ─── Logger middleware ────────────────────────────────────────────────────────
 
 func TestLoggerMiddlewarePassesThrough(t *testing.T) {
 	log := zap.NewNop()
@@ -107,8 +102,6 @@ func TestLoggerMiddlewareSkipsHealth(t *testing.T) {
 	}
 }
 
-// ─── Recovery ────────────────────────────────────────────────────────────────
-
 func TestRecoveryMiddleware(t *testing.T) {
 	panicHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		panic("test panic")
@@ -122,8 +115,6 @@ func TestRecoveryMiddleware(t *testing.T) {
 	}
 }
 
-// ─── Timeout ─────────────────────────────────────────────────────────────────
-
 func TestTimeoutMiddlewarePassesThrough(t *testing.T) {
 	w := httptest.NewRecorder()
 	r, _ := http.NewRequest(http.MethodGet, "/", nil)
@@ -132,8 +123,6 @@ func TestTimeoutMiddlewarePassesThrough(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
-
-// ─── TenantID ────────────────────────────────────────────────────────────────
 
 func TestTenantIDMiddleware(t *testing.T) {
 	var got string
@@ -163,8 +152,6 @@ func TestTenantIDEmpty(t *testing.T) {
 	}
 }
 
-// ─── CORS ────────────────────────────────────────────────────────────────────
-
 func TestCORSMiddleware(t *testing.T) {
 	w := httptest.NewRecorder()
 	r, _ := http.NewRequest(http.MethodOptions, "/", nil)
@@ -175,8 +162,6 @@ func TestCORSMiddleware(t *testing.T) {
 		t.Error("expected Access-Control-Allow-Origin to be set")
 	}
 }
-
-// ─── APIKey ──────────────────────────────────────────────────────────────────
 
 func TestAPIKeyMiddlewareValid(t *testing.T) {
 	cfg := middleware.APIKeyConfig{
@@ -216,8 +201,6 @@ func TestAPIKeyMiddlewareInvalid(t *testing.T) {
 	}
 }
 
-// ─── JWT ─────────────────────────────────────────────────────────────────────
-
 func TestJWTMiddlewareMissingHeader(t *testing.T) {
 	cfg := middleware.JWTConfig{SecretKey: []byte("secret")}
 	w := httptest.NewRecorder()
@@ -238,8 +221,6 @@ func TestJWTMiddlewareInvalidToken(t *testing.T) {
 		t.Errorf("expected 401, got %d", w.Code)
 	}
 }
-
-// ─── RateLimit ───────────────────────────────────────────────────────────────
 
 func TestRateLimitMiddlewareAllows(t *testing.T) {
 	cfg := middleware.RateLimitConfig{
@@ -266,19 +247,15 @@ func TestRateLimitMiddlewareBlocks(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "10.0.0.1:9999"
 
-	// First request consumes the burst token.
 	w1 := httptest.NewRecorder()
 	handler.ServeHTTP(w1, r)
 
-	// Second request should be blocked.
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, r)
 	if w2.Code != http.StatusTooManyRequests {
 		t.Errorf("expected 429, got %d", w2.Code)
 	}
 }
-
-// ─── IPKeyFunc ───────────────────────────────────────────────────────────────
 
 func TestIPKeyFuncFromRemoteAddr(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "/", nil)
@@ -295,5 +272,104 @@ func TestIPKeyFuncFromRealIP(t *testing.T) {
 	got := middleware.IPKeyFunc(r)
 	if got != "1.2.3.4" {
 		t.Errorf("expected '1.2.3.4', got %q", got)
+	}
+}
+
+func TestIPKeyFuncFromForwardedFor(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Forwarded-For", "5.6.7.8")
+	got := middleware.IPKeyFunc(r)
+	if got != "5.6.7.8" {
+		t.Errorf("expected '5.6.7.8', got %q", got)
+	}
+}
+
+func makeHS256Token(t *testing.T, secret string) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "user-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	str, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return str
+}
+
+func TestClaimsFromContext(t *testing.T) {
+	const secret = "test-secret"
+	var captured bool
+
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		claims, ok := middleware.ClaimsFromContext(r.Context())
+		if !ok {
+			t.Error("expected claims in context")
+			return
+		}
+		if claims["sub"] != "user-1" {
+			t.Errorf("expected sub=user-1, got %v", claims["sub"])
+		}
+		captured = true
+	})
+
+	cfg := middleware.JWTConfig{SecretKey: []byte(secret)}
+	wrapped := middleware.JWT(cfg)(handler)
+
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+makeHS256Token(t, secret))
+	wrapped.ServeHTTP(w, r)
+
+	if !captured {
+		t.Fatal("handler was not reached")
+	}
+}
+
+func TestClaimsFromContextMissing(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	_, ok := middleware.ClaimsFromContext(r.Context())
+	if ok {
+		t.Error("expected ok=false when no claims in context")
+	}
+}
+
+func TestCORSAllowAll(t *testing.T) {
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodOptions, "/", nil)
+	r.Header.Set("Origin", "https://anything.example.com")
+	r.Header.Set("Access-Control-Request-Method", "DELETE")
+	middleware.CORSAllowAll()(noopHandler).ServeHTTP(w, r)
+
+	if w.Header().Get("Access-Control-Allow-Origin") == "" {
+		t.Error("expected Access-Control-Allow-Origin to be set by CORSAllowAll")
+	}
+}
+
+func TestTimeoutMiddlewareWritesBodyDirectly(t *testing.T) {
+	bodyHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("direct body"))
+	})
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	middleware.Timeout(5*time.Second)(bodyHandler).ServeHTTP(w, r)
+
+	if w.Body.String() != "direct body" {
+		t.Errorf("expected 'direct body', got %q", w.Body.String())
+	}
+}
+
+func TestTimeoutMiddlewareFires(t *testing.T) {
+	slowHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	middleware.Timeout(20*time.Millisecond)(slowHandler).ServeHTTP(w, r)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected 504 Gateway Timeout, got %d", w.Code)
 	}
 }

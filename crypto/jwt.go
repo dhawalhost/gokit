@@ -26,19 +26,24 @@ func SignHS256(claims Claims, secret []byte) (string, error) {
 }
 
 // VerifyHS256 parses and validates an HS256-signed token string.
+// This function validates the token signature, expiration, and other standard claims.
 func VerifyHS256(tokenStr string, secret []byte) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("crypto: unexpected signing method: %v", t.Header["alg"])
-		}
-		return secret, nil
-	})
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{},
+		func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("%w: %v", ErrUnexpectedSigningMethod, t.Header["alg"])
+			}
+			return secret, nil
+		},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: verify hs256: %w", err)
 	}
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
-		return nil, fmt.Errorf("crypto: invalid token claims")
+		return nil, ErrInvalidTokenClaims
 	}
 	return claims, nil
 }
@@ -54,19 +59,24 @@ func SignRS256(claims Claims, privateKey *rsa.PrivateKey) (string, error) {
 }
 
 // VerifyRS256 parses and validates an RS256-signed token string.
+// This function validates the token signature, expiration, and other standard claims.
 func VerifyRS256(tokenStr string, publicKey *rsa.PublicKey) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("crypto: unexpected signing method: %v", t.Header["alg"])
-		}
-		return publicKey, nil
-	})
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{},
+		func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("%w: %v", ErrUnexpectedSigningMethod, t.Header["alg"])
+			}
+			return publicKey, nil
+		},
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithExpirationRequired(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: verify rs256: %w", err)
 	}
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
-		return nil, fmt.Errorf("crypto: invalid token claims")
+		return nil, ErrInvalidTokenClaims
 	}
 	return claims, nil
 }
