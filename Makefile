@@ -3,12 +3,16 @@
 # Run all unit tests.
 test:
 	go test \
+		./audit/... \
+		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
+		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
 		./config/... \
 		./crypto/... \
+		./database/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
@@ -19,7 +23,9 @@ test:
 		./jobqueue/... \
 		./logger/... \
 		./middleware/... \
+		./multitenancy/... \
 		./observability/... \
+		./outbox/... \
 		./pagination/... \
 		./ratelimit/... \
 		./response/... \
@@ -33,12 +39,16 @@ test:
 # Run tests with the race detector.
 test-race:
 	go test -race \
+		./audit/... \
+		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
+		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
 		./config/... \
 		./crypto/... \
+		./database/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
@@ -49,7 +59,9 @@ test-race:
 		./jobqueue/... \
 		./logger/... \
 		./middleware/... \
+		./multitenancy/... \
 		./observability/... \
+		./outbox/... \
 		./pagination/... \
 		./ratelimit/... \
 		./response/... \
@@ -63,12 +75,16 @@ test-race:
 # Generate coverage report (opens in browser via 'go tool cover -html').
 cover:
 	go test -coverprofile=coverage.out -covermode=atomic \
+		./audit/... \
+		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
+		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
 		./config/... \
 		./crypto/... \
+		./database/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
@@ -79,7 +95,9 @@ cover:
 		./jobqueue/... \
 		./logger/... \
 		./middleware/... \
+		./multitenancy/... \
 		./observability/... \
+		./outbox/... \
 		./pagination/... \
 		./ratelimit/... \
 		./response/... \

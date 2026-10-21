@@ -49,10 +49,12 @@ jobs:
             ./authz/... \
             ./bloomfilter/... \
             ./bulkhead/... \
+            ./cache/... \
             ./circuitbreaker/... \
             ./client/... \
             ./config/... \
             ./crypto/... \
+            ./database/... \
             ./distlock/... \
             ./errors/... \
             ./eventbus/... \
