@@ -33,13 +33,24 @@ func TestMultitenancy_PostgreSQLRowLevelSecurity(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 1. Setup table and PostgreSQL Row-Level Security policy
+	// 1. Setup table, non-superuser role (superusers bypass RLS), and PostgreSQL Row-Level Security policy
 	setupSQL := `
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'tenant_app_user') THEN
+			CREATE ROLE tenant_app_user;
+		END IF;
+	END
+	$$;
+	GRANT USAGE ON SCHEMA public TO tenant_app_user;
+
 	CREATE TABLE IF NOT EXISTS tenant_documents (
 		id TEXT PRIMARY KEY,
 		tenant_id TEXT NOT NULL,
 		title TEXT NOT NULL
 	);
+	GRANT ALL PRIVILEGES ON TABLE tenant_documents TO tenant_app_user;
+
 	ALTER TABLE tenant_documents ENABLE ROW LEVEL SECURITY;
 	ALTER TABLE tenant_documents FORCE ROW LEVEL SECURITY;
 	DROP POLICY IF EXISTS tenant_isolation_policy ON tenant_documents;
@@ -54,8 +65,17 @@ func TestMultitenancy_PostgreSQLRowLevelSecurity(t *testing.T) {
 		_ = db.GORM.Exec("DROP TABLE IF EXISTS tenant_documents").Error
 	}()
 
+	withTenant := func(tenantID string, fn func(tx *gorm.DB) error) error {
+		return multitenancy.WithTenantTx(ctx, db.GORM, tenantID, func(tx *gorm.DB) error {
+			if err := tx.Exec("SET LOCAL ROLE tenant_app_user").Error; err != nil {
+				return err
+			}
+			return fn(tx)
+		})
+	}
+
 	// 2. Insert documents as Tenant A
-	err = multitenancy.WithTenantTx(ctx, db.GORM, "tenant-a", func(tx *gorm.DB) error {
+	err = withTenant("tenant-a", func(tx *gorm.DB) error {
 		doc := &TenantDocument{
 			ID:       "doc-a1",
 			TenantID: "tenant-a",
@@ -68,7 +88,7 @@ func TestMultitenancy_PostgreSQLRowLevelSecurity(t *testing.T) {
 	}
 
 	// 3. Query documents as Tenant A -> should find doc-a1
-	err = multitenancy.WithTenantTx(ctx, db.GORM, "tenant-a", func(tx *gorm.DB) error {
+	err = withTenant("tenant-a", func(tx *gorm.DB) error {
 		var docs []TenantDocument
 		if err := tx.Find(&docs).Error; err != nil {
 			return err
@@ -83,7 +103,7 @@ func TestMultitenancy_PostgreSQLRowLevelSecurity(t *testing.T) {
 	}
 
 	// 4. Query documents as Tenant B -> RLS MUST filter out Tenant A's document (returns 0 rows)
-	err = multitenancy.WithTenantTx(ctx, db.GORM, "tenant-b", func(tx *gorm.DB) error {
+	err = withTenant("tenant-b", func(tx *gorm.DB) error {
 		var docs []TenantDocument
 		if err := tx.Find(&docs).Error; err != nil {
 			return err
@@ -99,6 +119,9 @@ func TestMultitenancy_PostgreSQLRowLevelSecurity(t *testing.T) {
 
 	// 5. Query without RLS tenant session set -> RLS policy filters out all rows
 	err = db.GORM.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL ROLE tenant_app_user").Error; err != nil {
+			return err
+		}
 		var docs []TenantDocument
 		if err := tx.Find(&docs).Error; err != nil {
 			return err

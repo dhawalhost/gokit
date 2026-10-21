@@ -81,16 +81,36 @@ func (s *GORMStore) Save(ctx context.Context, msg *Message) error {
 	return s.db.WithContext(ctx).Create(msg).Error
 }
 
-// FetchPending retrieves pending messages eligible for dispatch, using SKIP LOCKED to prevent concurrency conflicts.
+// FetchPending retrieves pending messages eligible for dispatch, atomically locking and leasing
+// them using SKIP LOCKED to prevent concurrency conflicts across parallel workers.
 func (s *GORMStore) FetchPending(ctx context.Context, limit int) ([]*Message, error) {
 	var messages []*Message
 	now := time.Now().UTC()
-	err := s.db.WithContext(ctx).
-		Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-		Where("status = ? AND scheduled_at <= ?", StatusPending, now).
-		Order("scheduled_at ASC").
-		Limit(limit).
-		Find(&messages).Error
+	leaseUntil := now.Add(2 * time.Minute)
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ids []string
+		if err := tx.Model(&Message{}).
+			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status = ? AND scheduled_at <= ?", StatusPending, now).
+			Order("scheduled_at ASC").
+			Limit(limit).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+
+		if len(ids) == 0 {
+			return nil
+		}
+
+		if err := tx.Model(&Message{}).
+			Where("id IN ?", ids).
+			Update("scheduled_at", leaseUntil).Error; err != nil {
+			return err
+		}
+
+		return tx.Where("id IN ?", ids).Find(&messages).Error
+	})
 	if err != nil {
 		return nil, err
 	}

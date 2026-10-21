@@ -54,8 +54,8 @@ func SetRLS(ctx context.Context, tx *gorm.DB, tenantID string, variable ...strin
 	if len(variable) > 0 && variable[0] != "" {
 		v = variable[0]
 	}
-	// SET LOCAL is transaction-scoped in PostgreSQL and automatically reverts on commit/rollback.
-	return tx.WithContext(ctx).Exec(fmt.Sprintf("SET LOCAL %s = ?", v), tenantID).Error
+	// set_config(name, value, is_local) safely sets transaction-scoped config with query parameters ($1, $2).
+	return tx.WithContext(ctx).Exec("SELECT set_config(?, ?, true)", v, tenantID).Error
 }
 
 // WithTenantTx executes fn within a database transaction where PostgreSQL RLS is configured for the given tenant.
