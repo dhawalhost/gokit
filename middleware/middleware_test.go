@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -261,8 +262,8 @@ func TestIPKeyFuncFromRemoteAddr(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "192.168.1.1:4444"
 	got := middleware.IPKeyFunc(r)
-	if got != "192.168.1.1:4444" {
-		t.Errorf("expected '192.168.1.1:4444', got %q", got)
+	if got != "192.168.1.1" {
+		t.Errorf("expected '192.168.1.1', got %q", got)
 	}
 }
 
@@ -371,5 +372,138 @@ func TestTimeoutMiddlewareFires(t *testing.T) {
 
 	if w.Code != http.StatusGatewayTimeout {
 		t.Errorf("expected 504 Gateway Timeout, got %d", w.Code)
+	}
+}
+
+func TestIPKeyFunc_Hardened(t *testing.T) {
+	// 1. Strips port from RemoteAddr
+	r1, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r1.RemoteAddr = "192.168.1.100:54321"
+	if got := middleware.IPKeyFunc(r1); got != "192.168.1.100" {
+		t.Errorf("expected 192.168.1.100, got %s", got)
+	}
+
+	// 2. Extracts first IP from comma-separated X-Forwarded-For
+	r2, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r2.Header.Set("X-Forwarded-For", "203.0.113.195, 70.41.3.18, 150.172.238.178")
+	if got := middleware.IPKeyFunc(r2); got != "203.0.113.195" {
+		t.Errorf("expected 203.0.113.195, got %s", got)
+	}
+
+	// 3. Rejects invalid IP in X-Forwarded-For and falls back to RemoteAddr
+	r3, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r3.Header.Set("X-Forwarded-For", "<script>alert(1)</script>")
+	r3.RemoteAddr = "10.0.0.1:1234"
+	if got := middleware.IPKeyFunc(r3); got != "10.0.0.1" {
+		t.Errorf("expected fallback to 10.0.0.1, got %s", got)
+	}
+}
+
+func TestRequestID_Sanitization(t *testing.T) {
+	// Rejects invalid characters and replaces with UUID
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Request-ID", "<invalid_id_with_special_chars!>")
+	w := httptest.NewRecorder()
+
+	middleware.RequestID()(noopHandler).ServeHTTP(w, r)
+	id := w.Header().Get("X-Request-ID")
+	if id == "<invalid_id_with_special_chars!>" || len(id) == 0 {
+		t.Errorf("insecure Request-ID was not sanitized: %s", id)
+	}
+
+	// Accepts valid alphanumeric request ID
+	rValid, _ := http.NewRequest(http.MethodGet, "/", nil)
+	rValid.Header.Set("X-Request-ID", "req-12345-abcdef")
+	wValid := httptest.NewRecorder()
+	middleware.RequestID()(noopHandler).ServeHTTP(wValid, rValid)
+	if wValid.Header().Get("X-Request-ID") != "req-12345-abcdef" {
+		t.Errorf("valid Request-ID was unexpectedly replaced: %s", wValid.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestJWTMiddleware_ExpiredToken(t *testing.T) {
+	secret := "test-secret"
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "user-1",
+		"exp": time.Now().Add(-1 * time.Hour).Unix(), // expired 1 hour ago
+	})
+	tokenStr, _ := token.SignedString([]byte(secret))
+
+	cfg := middleware.JWTConfig{SecretKey: []byte(secret)}
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	middleware.JWT(cfg)(noopHandler).ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for expired token, got %d", w.Code)
+	}
+}
+
+func TestJWTMiddleware_CustomContextKey(t *testing.T) {
+	secret := "test-secret"
+	tokenStr := makeHS256Token(t, secret)
+	var captured bool
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := middleware.ClaimsFromContext(r.Context())
+		if !ok || claims["sub"] != "user-1" {
+			t.Errorf("ClaimsFromContext failed with custom context key")
+		}
+		captured = true
+	})
+
+	cfg := middleware.JWTConfig{
+		SecretKey:  []byte(secret),
+		ContextKey: "user_claims",
+	}
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	middleware.JWT(cfg)(handler).ServeHTTP(w, r)
+	if !captured {
+		t.Fatal("handler was not reached")
+	}
+}
+
+type stubStore struct {
+	allowed bool
+}
+
+func (s *stubStore) Allow(_ context.Context, _ string, _ float64, _ int) (bool, error) {
+	return s.allowed, nil
+}
+
+func TestRateLimitMiddleware_Headers(t *testing.T) {
+	store := &stubStore{allowed: false}
+	mw := middleware.RateLimit(middleware.RateLimitConfig{
+		RequestsPerSecond: 1,
+		Burst:             5,
+		Store:             store,
+	})
+
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	mw(noopHandler).ServeHTTP(w, r)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+	if w.Header().Get("Retry-After") != "1" {
+		t.Errorf("expected Retry-After header, got %s", w.Header().Get("Retry-After"))
+	}
+	if w.Header().Get("X-RateLimit-Limit") != "5" {
+		t.Errorf("expected X-RateLimit-Limit 5, got %s", w.Header().Get("X-RateLimit-Limit"))
+	}
+}
+
+func TestSecureHeaders_PermissionsPolicy(t *testing.T) {
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	middleware.SecureHeaders()(noopHandler).ServeHTTP(w, r)
+
+	if w.Header().Get("Permissions-Policy") == "" {
+		t.Error("expected Permissions-Policy header to be set")
 	}
 }

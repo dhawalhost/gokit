@@ -75,3 +75,20 @@ func TestFromContextFallsBack(t *testing.T) {
 		t.Fatal("expected non-nil logger from empty context")
 	}
 }
+
+func TestLogger_AutomaticMasking(t *testing.T) {
+	l, err := logger.New("info", false)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if l == nil {
+		t.Fatal("expected non-nil logger")
+	}
+
+	// Should not panic or fail when logging masked fields
+	l.Info("user login",
+		zap.String("password", "super-secret-123"),
+		zap.String("api_key", "sk_live_12345"),
+		zap.String("username", "alice"),
+	)
+}

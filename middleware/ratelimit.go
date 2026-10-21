@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/dhawalhost/gokit/ratelimit"
 )
@@ -19,6 +20,8 @@ type RateLimitConfig struct {
 }
 
 // RateLimit returns a middleware that enforces per-key rate limiting.
+// On rate-limit rejection, it returns HTTP 429 with standard Retry-After
+// and X-RateLimit-Limit headers.
 func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 	if cfg.KeyFunc == nil {
 		cfg.KeyFunc = IPKeyFunc
@@ -28,6 +31,10 @@ func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 			key := cfg.KeyFunc(r)
 			allowed, err := cfg.Store.Allow(r.Context(), key, cfg.RequestsPerSecond, cfg.Burst)
 			if err != nil || !allowed {
+				if cfg.Burst > 0 {
+					w.Header().Set("X-RateLimit-Limit", strconv.Itoa(cfg.Burst))
+				}
+				w.Header().Set("Retry-After", "1")
 				writeJSONError(w, http.StatusTooManyRequests, `{"code":"TOO_MANY_REQUESTS","message":"rate limit exceeded"}`)
 				return
 			}
