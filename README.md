@@ -43,6 +43,8 @@
 | `pagination` | Offset and cursor pagination parsed from HTTP requests |
 | `idgen` | UUID v4/v7, ULID, NanoID generation |
 | `bloomfilter` | In-memory and Redis-backed Bloom filter for probabilistic set membership |
+| `client` | Resilient outbound HTTP client with jittered exponential backoff, circuit breaker integration, tracing, and body replay |
+| `distlock` | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
@@ -210,6 +212,42 @@ cb := circuitbreaker.New(circuitbreaker.Config{
 err := cb.Execute(func() error {
     return callExternalAPI()
 })
+```
+
+### `client`
+
+Resilient outbound HTTP client with retry backoff, circuit-breaking, and distributed context propagation.
+
+```go
+httpClient := client.New(
+    client.WithName("payment-service"),
+    client.WithBaseURL("https://api.payments.internal"),
+    client.WithTimeout(10 * time.Second),
+    client.WithCircuitBreaker(cb),
+    client.WithRetryPolicy(client.DefaultRetryPolicy()), // 3 retries, exponential backoff, full jitter, 5xx/429
+    client.WithTracePropagation(true),                  // injects W3C tracecontext headers
+    client.WithRequestIDPropagation(true),             // forwards X-Request-ID from context
+)
+
+var user User
+resp, err := httpClient.PostJSON(ctx, "/v1/charge", chargeReq, &user)
+```
+
+### `distlock`
+
+Production distributed locks with atomic Lua release/extend, heartbeat auto-renewal, and spin-retries.
+
+```go
+// Redis-backed distributed locker
+locker := distlock.NewRedisLocker(redisClient)
+
+// Execute critical section under coordinated distributed lock
+err := locker.WithLock(ctx, "cron:nightly-billing", 30*time.Second, func(lockCtx context.Context) error {
+    return runNightlyBilling(lockCtx)
+}, 
+    distlock.WithAutoRenew(10*time.Second),       // auto-renews lock until function finishes
+    distlock.WithRetry(5, 50*time.Millisecond),  // retries with jitter if currently held
+)
 ```
 
 ### `database`

@@ -47,10 +47,13 @@ jobs:
           go test -race -coverprofile=coverage.out -covermode=atomic \
             ./bloomfilter/... \
             ./circuitbreaker/... \
+            ./client/... \
             ./config/... \
             ./crypto/... \
+            ./distlock/... \
             ./errors/... \
             ./health/... \
+            ./idempotency/... \
             ./idgen/... \
             ./logger/... \
             ./middleware/... \
@@ -59,6 +62,7 @@ jobs:
             ./ratelimit/... \
             ./response/... \
             ./router/... \
+            ./server/... \
             ./testutil/... \
             ./validator/...
 

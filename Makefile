@@ -5,10 +5,13 @@ test:
 	go test \
 		./bloomfilter/... \
 		./circuitbreaker/... \
+		./client/... \
 		./config/... \
 		./crypto/... \
+		./distlock/... \
 		./errors/... \
 		./health/... \
+		./idempotency/... \
 		./idgen/... \
 		./logger/... \
 		./middleware/... \
@@ -17,6 +20,7 @@ test:
 		./ratelimit/... \
 		./response/... \
 		./router/... \
+		./server/... \
 		./testutil/... \
 		./validator/...
 
@@ -25,10 +29,13 @@ test-race:
 	go test -race \
 		./bloomfilter/... \
 		./circuitbreaker/... \
+		./client/... \
 		./config/... \
 		./crypto/... \
+		./distlock/... \
 		./errors/... \
 		./health/... \
+		./idempotency/... \
 		./idgen/... \
 		./logger/... \
 		./middleware/... \
@@ -37,6 +44,7 @@ test-race:
 		./ratelimit/... \
 		./response/... \
 		./router/... \
+		./server/... \
 		./testutil/... \
 		./validator/...
 
@@ -45,10 +53,13 @@ cover:
 	go test -coverprofile=coverage.out -covermode=atomic \
 		./bloomfilter/... \
 		./circuitbreaker/... \
+		./client/... \
 		./config/... \
 		./crypto/... \
+		./distlock/... \
 		./errors/... \
 		./health/... \
+		./idempotency/... \
 		./idgen/... \
 		./logger/... \
 		./middleware/... \
@@ -57,6 +68,7 @@ cover:
 		./ratelimit/... \
 		./response/... \
 		./router/... \
+		./server/... \
 		./testutil/... \
 		./validator/...
 	go tool cover -html=coverage.out

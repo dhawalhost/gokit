@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,7 +18,10 @@ import (
 // HTTPServer wraps net/http.Server with a chi router and graceful shutdown.
 type HTTPServer struct {
 	mux             *chi.Mux
+	mu              sync.Mutex
 	srv             *http.Server
+	shutdownOnce    sync.Once
+	shutdownErr     error
 	addr            string
 	readTimeout     time.Duration
 	writeTimeout    time.Duration
@@ -62,7 +66,7 @@ func (s *HTTPServer) Use(middleware ...func(http.Handler) http.Handler) {
 // Run starts the HTTP server and blocks until ctx is cancelled or a signal
 // (SIGTERM/SIGINT) is received, then gracefully shuts down.
 func (s *HTTPServer) Run(ctx context.Context) error {
-	s.srv = &http.Server{
+	srv := &http.Server{
 		Addr:              s.addr,
 		Handler:           s.mux,
 		ReadHeaderTimeout: s.readTimeout,
@@ -74,12 +78,16 @@ func (s *HTTPServer) Run(ctx context.Context) error {
 		},
 	}
 
+	s.mu.Lock()
+	s.srv = srv
+	s.mu.Unlock()
+
 	errCh := make(chan error, 1)
 	go func() {
 		if s.certFile != "" && s.keyFile != "" {
-			errCh <- s.srv.ListenAndServeTLS(s.certFile, s.keyFile)
+			errCh <- srv.ListenAndServeTLS(s.certFile, s.keyFile)
 		} else {
-			errCh <- s.srv.ListenAndServe()
+			errCh <- srv.ListenAndServe()
 		}
 	}()
 
@@ -102,20 +110,27 @@ func (s *HTTPServer) Run(ctx context.Context) error {
 // If the incoming ctx is already cancelled, a fresh context with shutdownTimeout
 // is used to ensure in-flight connections have time to complete.
 func (s *HTTPServer) Shutdown(ctx context.Context) error {
-	baseCtx := context.Background()
-	if ctx != nil && ctx.Err() == nil {
-		baseCtx = ctx
-	}
+	s.shutdownOnce.Do(func() {
+		baseCtx := context.Background()
+		if ctx != nil && ctx.Err() == nil {
+			baseCtx = ctx
+		}
 
-	shutdownCtx, cancel := context.WithTimeout(baseCtx, s.shutdownTimeout)
-	defer cancel()
+		shutdownCtx, cancel := context.WithTimeout(baseCtx, s.shutdownTimeout)
+		defer cancel()
 
-	if s.srv == nil {
-		return nil
-	}
+		s.mu.Lock()
+		srv := s.srv
+		s.mu.Unlock()
 
-	if err := s.srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server: shutdown: %w", err)
-	}
-	return nil
+		if srv == nil {
+			return
+		}
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			s.shutdownErr = fmt.Errorf("server: shutdown: %w", err)
+		}
+	})
+
+	return s.shutdownErr
 }
