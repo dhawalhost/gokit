@@ -145,7 +145,8 @@ func (f *Filter) UnmarshalBinary(data []byte) error {
 	}
 	bitset := make([]uint64, words)
 	for i := range bitset {
-		bitset[i] = binary.LittleEndian.Uint64(data[24+8*uint64(i):])
+		offset := 24 + 8*i
+		bitset[i] = binary.LittleEndian.Uint64(data[offset:])
 	}
 	f.m = uint(m)
 	f.k = uint(k)

@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 )
@@ -21,7 +22,11 @@ func GenerateCodeChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// VerifyCodeChallenge checks that challenge == S256(verifier).
+// VerifyCodeChallenge checks that challenge == S256(verifier) using constant-time comparison.
 func VerifyCodeChallenge(verifier, challenge string) bool {
-	return GenerateCodeChallenge(verifier) == challenge
+	derived := GenerateCodeChallenge(verifier)
+	if len(derived) != len(challenge) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(derived), []byte(challenge)) == 1
 }

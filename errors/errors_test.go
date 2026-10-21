@@ -120,3 +120,34 @@ func TestWriteErrorPlain(t *testing.T) {
 		t.Errorf("expected 500, got %d", w.Code)
 	}
 }
+
+func TestWrap(t *testing.T) {
+	underlying := fmt.Errorf("sensitive db connection failed: pass=123")
+	wrapped := apperrors.Wrap(underlying, "Service temporarily unavailable")
+
+	if wrapped == nil {
+		t.Fatal("expected non-nil wrapped error")
+	}
+	if wrapped.HTTPStatus != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", wrapped.HTTPStatus)
+	}
+	if wrapped.Message != "Service temporarily unavailable" {
+		t.Errorf("expected public message, got %s", wrapped.Message)
+	}
+	if wrapped.Unwrap() != underlying {
+		t.Errorf("expected underlying cause to match")
+	}
+
+	// Verify that sensitive error text is NOT serialized to JSON
+	b, err := json.Marshal(wrapped)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(b) != `{"code":"INTERNAL_ERROR","message":"Service temporarily unavailable"}` {
+		t.Errorf("JSON leaked internal error: %s", b)
+	}
+
+	if apperrors.Wrap(nil, "msg") != nil {
+		t.Error("expected nil for nil input error")
+	}
+}

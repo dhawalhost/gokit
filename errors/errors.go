@@ -77,6 +77,18 @@ func ServiceUnavailable(message string) *AppError {
 	return New(http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", message)
 }
 
+// Wrap wraps an underlying internal error with a safe, public-facing user message.
+// The internal error is preserved in Err for logging/debugging and is excluded
+// from JSON serialization, preventing internal leakages (e.g. database/SQL traces).
+func Wrap(err error, publicMessage string) *AppError {
+	if err == nil {
+		return nil
+	}
+	ae := Internal(publicMessage)
+	ae.Err = err
+	return ae
+}
+
 // WithDetails attaches detail payload to an AppError.
 func WithDetails(err *AppError, details any) *AppError {
 	err.Details = details

@@ -6,12 +6,23 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
 	mw "github.com/dhawalhost/gokit/middleware"
 )
+
+// routePattern extracts the matched route template (e.g. "/users/{id}")
+// from Chi context to avoid high-cardinality Prometheus time series.
+func routePattern(r *http.Request) string {
+	rctx := chi.RouteContext(r.Context())
+	if rctx != nil && rctx.RoutePattern() != "" {
+		return rctx.RoutePattern()
+	}
+	return r.URL.Path
+}
 
 // Metrics returns a middleware that records Prometheus metrics for each request.
 // InitMetrics must be called before this middleware is used.
@@ -27,11 +38,12 @@ func Metrics() func(http.Handler) http.Handler {
 			next.ServeHTTP(rec, r)
 			elapsed := time.Since(start).Seconds()
 			status := strconv.Itoa(rec.Status)
+			path := routePattern(r)
 			if HTTPRequestDuration != nil {
-				HTTPRequestDuration.WithLabelValues(r.Method, r.URL.Path, status).Observe(elapsed)
+				HTTPRequestDuration.WithLabelValues(r.Method, path, status).Observe(elapsed)
 			}
 			if HTTPRequestsTotal != nil {
-				HTTPRequestsTotal.WithLabelValues(r.Method, r.URL.Path, status).Inc()
+				HTTPRequestsTotal.WithLabelValues(r.Method, path, status).Inc()
 			}
 		})
 	}
@@ -42,11 +54,12 @@ func Tracing(serviceName string) func(http.Handler) http.Handler {
 	tracer := otel.Tracer(serviceName)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), fmt.Sprintf("%s %s", r.Method, r.URL.Path))
+			path := routePattern(r)
+			ctx, span := tracer.Start(r.Context(), fmt.Sprintf("%s %s", r.Method, path))
 			defer span.End()
 			span.SetAttributes(
 				attribute.String("http.method", r.Method),
-				attribute.String("http.path", r.URL.Path),
+				attribute.String("http.path", path),
 			)
 			rec := &mw.StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 			next.ServeHTTP(rec, r.WithContext(ctx))

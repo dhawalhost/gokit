@@ -26,19 +26,20 @@
 |---|---|
 | `server` | `HTTPServer` wrapping `net/http` with chi, graceful shutdown, optional TLS |
 | `router` | Chi router constructors and `ServiceRouter` mount interface |
-| `middleware` | 10 composable middlewares: RequestID, Logger, Recovery, CORS, JWT, APIKey, TenantID, RateLimit, Timeout, SecureHeaders |
+| `middleware` | 11 composable middlewares: RequestID, Logger, Recovery, CORS, JWT, APIKey, TenantID, RateLimit, Timeout, SecureHeaders, Idempotency |
+| `idempotency` | IETF-compliant idempotency control with SHA-256 payload anti-collision, in-flight locking, and Redis/in-memory backends |
 | `ratelimit` | `Store` interface with in-memory token-bucket and Redis sliding-window backends |
 | `circuitbreaker` | Thread-safe closed/open/half-open circuit breaker |
-| `logger` | Zap wrapper with global singleton and context helpers |
-| `config` | Viper-backed config loader with `APP_*` env prefix and YAML file support |
-| `database` | GORM v2 + pgxpool combined `DB` struct with migration helpers |
+| `logger` | Zap wrapper with automatic sensitive key masking (`********`), global singleton, and context helpers |
+| `config` | Viper-backed config loader with hot-reloading (`NewManager`), secret auto-masking, `APP_*` env prefix, and YAML/.env support |
+| `database` | GORM v2 + pgxpool combined `DB` struct with pool management and migration helpers |
 | `cache` | `Cache` interface with Redis backend |
-| `crypto` | AES-256-GCM, bcrypt, HMAC, JWT HS256/RS256, PKCE, secure random |
-| `errors` | Structured `AppError` with HTTP status codes and JSON writing |
+| `crypto` | AES-256-GCM, bcrypt, constant-time HMAC, JWT HS256/RS256, timing-safe PKCE, secure random |
+| `errors` | Structured `AppError` with HTTP status codes, safe `Wrap` error encapsulation, and JSON writing |
 | `response` | Generic `Response[T]` and `PaginatedResponse[T]` helpers |
 | `validator` | go-playground/validator wrapper with JSON bind |
 | `health` | Liveness and readiness HTTP handlers with named checkers |
-| `observability` | Prometheus metrics, OTLP tracing, and chi-compatible middlewares |
+| `observability` | Prometheus metrics with route pattern cardinality protection, OTLP tracing, and chi-compatible middlewares |
 | `pagination` | Offset and cursor pagination parsed from HTTP requests |
 | `idgen` | UUID v4/v7, ULID, NanoID generation |
 | `bloomfilter` | In-memory and Redis-backed Bloom filter for probabilistic set membership |
@@ -166,6 +167,22 @@ r.Use(middleware.RateLimit(middleware.RateLimitConfig{
 }))
 r.Use(middleware.Timeout(30 * time.Second))
 r.Use(middleware.SecureHeaders())
+r.Use(middleware.Idempotency(idempotency.Config{TTL: 24 * time.Hour}))
+```
+
+### `idempotency`
+
+```go
+// Memory-backed idempotency
+r.Use(idempotency.Middleware(idempotency.Config{
+    TTL: 24 * time.Hour,
+}))
+
+// Distributed Redis-backed idempotency
+r.Use(idempotency.Middleware(idempotency.Config{
+    Store: idempotency.NewCacheStore(redisCache),
+    TTL:   24 * time.Hour,
+}))
 ```
 
 ### `ratelimit`
