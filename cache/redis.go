@@ -10,15 +10,21 @@ import (
 	"github.com/dhawalhost/gokit/config"
 )
 
-// RedisCache is a Cache backed by Redis.
+// RedisCache is a Cache backed by Redis (supports standalone, cluster, or sentinel).
 type RedisCache struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 // NewRedis creates a new RedisCache from the given config.
+// It automatically supports single-node Redis, Redis Cluster, and Redis Sentinel.
 func NewRedis(cfg config.RedisConfig) (*RedisCache, error) {
-	opts := &redis.Options{
-		Addr:         cfg.Addr,
+	addrs := cfg.Addrs
+	if len(addrs) == 0 && cfg.Addr != "" {
+		addrs = []string{cfg.Addr}
+	}
+
+	opts := &redis.UniversalOptions{
+		Addrs:        addrs,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		DialTimeout:  cfg.DialTimeout,
@@ -26,6 +32,13 @@ func NewRedis(cfg config.RedisConfig) (*RedisCache, error) {
 		WriteTimeout: cfg.WriteTimeout,
 		PoolSize:     cfg.PoolSize,
 		PoolTimeout:  cfg.PoolTimeout,
+		MasterName:   cfg.MasterName,
+	}
+
+	if cfg.Cluster {
+		opts.IsClusterMode = true
+		// Redis Cluster only supports database 0.
+		opts.DB = 0
 	}
 
 	// Set default timeouts if not configured
@@ -45,11 +58,21 @@ func NewRedis(cfg config.RedisConfig) (*RedisCache, error) {
 		opts.PoolTimeout = 4 * time.Second
 	}
 
-	client := redis.NewClient(opts)
+	client := redis.NewUniversalClient(opts)
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		return nil, fmt.Errorf("cache: redis ping: %w", err)
 	}
 	return &RedisCache{client: client}, nil
+}
+
+// NewRedisFromClient creates a RedisCache from an existing redis.UniversalClient.
+func NewRedisFromClient(client redis.UniversalClient) *RedisCache {
+	return &RedisCache{client: client}
+}
+
+// Client returns the underlying redis.UniversalClient instance.
+func (r *RedisCache) Client() redis.UniversalClient {
+	return r.client
 }
 
 // HealthCheck pings the Redis server.
@@ -77,9 +100,25 @@ func (r *RedisCache) Set(ctx context.Context, key string, value any, ttl time.Du
 	return nil
 }
 
-// Delete removes the given keys.
+// Delete removes the given keys in a cluster-safe manner (avoiding CROSSSLOT errors).
 func (r *RedisCache) Delete(ctx context.Context, keys ...string) error {
-	if err := r.client.Del(ctx, keys...).Err(); err != nil {
+	if len(keys) == 0 {
+		return nil
+	}
+	if len(keys) == 1 {
+		if err := r.client.Del(ctx, keys[0]).Err(); err != nil {
+			return fmt.Errorf("cache: delete %q: %w", keys[0], err)
+		}
+		return nil
+	}
+
+	// For multiple keys, use a pipeline so keys distributed across different
+	// Redis Cluster hash slots are routed to their respective shards without CROSSSLOT errors.
+	pipe := r.client.Pipeline()
+	for _, k := range keys {
+		pipe.Del(ctx, k)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("cache: delete: %w", err)
 	}
 	return nil
@@ -95,7 +134,18 @@ func (r *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // Flush deletes all keys in the current Redis database.
+// For Redis Cluster, it flushes all master nodes in the cluster.
 func (r *RedisCache) Flush(ctx context.Context) error {
+	if clusterClient, ok := r.client.(*redis.ClusterClient); ok {
+		err := clusterClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return master.FlushDB(ctx).Err()
+		})
+		if err != nil {
+			return fmt.Errorf("cache: flush cluster: %w", err)
+		}
+		return nil
+	}
+
 	if err := r.client.FlushDB(ctx).Err(); err != nil {
 		return fmt.Errorf("cache: flush: %w", err)
 	}

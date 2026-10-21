@@ -32,9 +32,9 @@ end
 `
 )
 
-// RedisLocker implements Locker using Redis as the distributed state store.
+// RedisLocker implements Locker using Redis as the distributed state store (standalone, cluster, or sentinel).
 type RedisLocker struct {
-	client    *redis.Client
+	client    redis.UniversalClient
 	keyPrefix string
 }
 
@@ -49,7 +49,7 @@ func WithKeyPrefix(prefix string) RedisOption {
 }
 
 // NewRedisLocker creates a new RedisLocker instance.
-func NewRedisLocker(client *redis.Client, opts ...RedisOption) *RedisLocker {
+func NewRedisLocker(client redis.UniversalClient, opts ...RedisOption) *RedisLocker {
 	locker := &RedisLocker{
 		client:    client,
 		keyPrefix: defaultKeyPrefix,
@@ -63,7 +63,7 @@ func NewRedisLocker(client *redis.Client, opts ...RedisOption) *RedisLocker {
 // RedisLock represents an acquired Redis-backed distributed lock.
 type RedisLock struct {
 	*BaseLock
-	client  *redis.Client
+	client  redis.UniversalClient
 	fullKey string
 }
 

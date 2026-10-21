@@ -268,10 +268,20 @@ err = database.RunMigrations(ctx, cfg.Database.DSN, cfg.Database.MigrationsPath)
 
 ### `cache`
 
+Supports standalone Redis, Redis Cluster, and Redis Sentinel out-of-the-box via `redis.UniversalClient`:
+
 ```go
+// Standalone, Cluster, or Sentinel configuration via RedisConfig (Addr or Addrs + Cluster: true)
 cache, err := cache.NewRedis(cfg.Redis)
+defer cache.Close()
+
+// Cluster-safe operations (automatic slot routing and cross-slot safe pipelined deletes)
 cache.Set(ctx, "key", "value", time.Hour)
 val, err := cache.Get(ctx, "key")
+cache.Delete(ctx, "k1", "k2", "k3") // pipelined multi-key delete
+
+// Access underlying redis.UniversalClient (usable in distlock, ratelimit, bloomfilter)
+client := cache.Client()
 ```
 
 ### `crypto`

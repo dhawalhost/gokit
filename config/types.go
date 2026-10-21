@@ -121,9 +121,12 @@ func (c DatabaseConfig) LogValue() slog.Value {
 	return slog.StringValue(c.String())
 }
 
-// RedisConfig holds Redis connection configuration.
+// RedisConfig holds Redis connection configuration for standalone, cluster, or sentinel deployments.
 type RedisConfig struct {
 	Addr         string        `mapstructure:"addr" json:"addr"`
+	Addrs        []string      `mapstructure:"addrs" json:"addrs"`
+	Cluster      bool          `mapstructure:"cluster" json:"cluster"`
+	MasterName   string        `mapstructure:"master_name" json:"master_name"`
 	Password     string        `mapstructure:"password" json:"password"`
 	DB           int           `mapstructure:"db" json:"db"`
 	DialTimeout  time.Duration `mapstructure:"dial_timeout" json:"dial_timeout"`

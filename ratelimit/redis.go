@@ -9,14 +9,14 @@ import (
 )
 
 // RedisStore is a rate-limit store that uses a Redis sliding-window counter
-// implemented with a Lua script.
+// implemented with a Lua script (supports standalone, cluster, and sentinel).
 type RedisStore struct {
-	client         *redis.Client
+	client         redis.UniversalClient
 	windowDuration time.Duration
 }
 
 // NewRedisStore creates a RedisStore backed by the given Redis client and window duration.
-func NewRedisStore(client *redis.Client, windowDuration time.Duration) *RedisStore {
+func NewRedisStore(client redis.UniversalClient, windowDuration time.Duration) *RedisStore {
 	return &RedisStore{client: client, windowDuration: windowDuration}
 }
 

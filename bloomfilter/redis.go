@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -14,16 +15,24 @@ import (
 // strategy as Filter so both backends are interchangeable for membership tests
 // when they share the same m and k parameters.
 type RedisStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	key    string
 	m      uint
 	k      uint
 }
 
+func isNilClient(c redis.UniversalClient) bool {
+	if c == nil {
+		return true
+	}
+	v := reflect.ValueOf(c)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
 // NewRedisStore creates a RedisStore sized for expectedItems elements at the
 // given falsePositiveRate (0 < p < 1), storing bits under key.
-func NewRedisStore(client *redis.Client, key string, expectedItems uint, falsePositiveRate float64) (*RedisStore, error) {
-	if client == nil {
+func NewRedisStore(client redis.UniversalClient, key string, expectedItems uint, falsePositiveRate float64) (*RedisStore, error) {
+	if isNilClient(client) {
 		return nil, ErrNilRedisClient
 	}
 	if key == "" {

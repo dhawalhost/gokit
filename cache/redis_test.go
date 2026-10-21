@@ -304,3 +304,76 @@ func TestSetTTLExpiry(t *testing.T) {
 		t.Error("expected key to be expired after TTL")
 	}
 }
+
+func TestNewRedis_AddrsSeedList(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rc, err := cache.NewRedis(config.RedisConfig{
+		Addrs: []string{mr.Addr()},
+	})
+	if err != nil {
+		t.Fatalf("NewRedis with Addrs: %v", err)
+	}
+	defer rc.Close()
+
+	if err := rc.Set(context.Background(), "cluster-test", "val", time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	val, err := rc.Get(context.Background(), "cluster-test")
+	if err != nil || val != "val" {
+		t.Errorf("Get: val=%s err=%v", val, err)
+	}
+}
+
+func TestNewRedisFromClient(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rawClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rawClient.Close()
+
+	rc := cache.NewRedisFromClient(rawClient)
+	if rc.Client() != rawClient {
+		t.Error("expected Client() to return the injected rawClient")
+	}
+
+	ctx := context.Background()
+	if err := rc.Set(ctx, "from-client", "hello", time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	val, err := rc.Get(ctx, "from-client")
+	if err != nil || val != "hello" {
+		t.Errorf("Get: val=%s err=%v", val, err)
+	}
+}
+
+func TestDelete_MultiKeysPipeline(t *testing.T) {
+	rc, _ := newTestCache(t)
+	ctx := context.Background()
+
+	// 0 keys
+	if err := rc.Delete(ctx); err != nil {
+		t.Fatalf("Delete(0 keys): %v", err)
+	}
+
+	// 1 key
+	_ = rc.Set(ctx, "k1", "v1", time.Minute)
+	if err := rc.Delete(ctx, "k1"); err != nil {
+		t.Fatalf("Delete(1 key): %v", err)
+	}
+	if exists, _ := rc.Exists(ctx, "k1"); exists {
+		t.Error("expected k1 to be deleted")
+	}
+
+	// Multiple keys (simulates pipeline / cross-slot safety)
+	_ = rc.Set(ctx, "k1", "v1", time.Minute)
+	_ = rc.Set(ctx, "k2", "v2", time.Minute)
+	_ = rc.Set(ctx, "k3", "v3", time.Minute)
+
+	if err := rc.Delete(ctx, "k1", "k2", "k3"); err != nil {
+		t.Fatalf("Delete(multi): %v", err)
+	}
+
+	for _, k := range []string{"k1", "k2", "k3"} {
+		if exists, _ := rc.Exists(ctx, k); exists {
+			t.Errorf("expected %s to be deleted", k)
+		}
+	}
+}
