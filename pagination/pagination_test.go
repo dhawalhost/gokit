@@ -15,110 +15,154 @@ func makeRequest(query string) *http.Request {
 	return r
 }
 
-func TestParseOffsetParamsDefaults(t *testing.T) {
-	p := pagination.ParseOffsetParams(makeRequest(""))
-	if p.Page != 1 {
-		t.Errorf("expected page=1, got %d", p.Page)
+func TestOffsetParams_TableDriven(t *testing.T) {
+	tests := []struct {
+		name         string
+		queryString  string
+		wantPage     int
+		wantPageSize int
+	}{
+		{
+			name:         "empty query returns default page=1 and pageSize=20",
+			queryString:  "",
+			wantPage:     1,
+			wantPageSize: 20,
+		},
+		{
+			name:         "custom valid parameters are parsed correctly",
+			queryString:  "page=3&page_size=50",
+			wantPage:     3,
+			wantPageSize: 50,
+		},
+		{
+			name:         "negative page defaults to page=1",
+			queryString:  "page=-1",
+			wantPage:     1,
+			wantPageSize: 20,
+		},
+		{
+			name:         "page size exceeding maximum is capped to default 20",
+			queryString:  "page_size=200",
+			wantPage:     1,
+			wantPageSize: 20,
+		},
 	}
-	if p.PageSize != 20 {
-		t.Errorf("expected page_size=20, got %d", p.PageSize)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := pagination.ParseOffsetParams(makeRequest(tc.queryString))
+			if p.Page != tc.wantPage {
+				t.Errorf("expected page=%d, got %d", tc.wantPage, p.Page)
+			}
+			if p.PageSize != tc.wantPageSize {
+				t.Errorf("expected page_size=%d, got %d", tc.wantPageSize, p.PageSize)
+			}
+		})
 	}
 }
 
-func TestParseOffsetParamsCustom(t *testing.T) {
-	p := pagination.ParseOffsetParams(makeRequest("page=3&page_size=50"))
-	if p.Page != 3 {
-		t.Errorf("expected page=3, got %d", p.Page)
+func TestToPagination_TableDriven(t *testing.T) {
+	tests := []struct {
+		name           string
+		params         pagination.OffsetParams
+		totalItems     int64
+		wantTotalPages int
+		wantHasPrev    bool
+		wantHasNext    bool
+	}{
+		{
+			name:           "middle page has both prev and next",
+			params:         pagination.OffsetParams{Page: 2, PageSize: 10},
+			totalItems:     35,
+			wantTotalPages: 4,
+			wantHasPrev:    true,
+			wantHasNext:    true,
+		},
+		{
+			name:           "first page has no prev",
+			params:         pagination.OffsetParams{Page: 1, PageSize: 10},
+			totalItems:     35,
+			wantTotalPages: 4,
+			wantHasPrev:    false,
+			wantHasNext:    true,
+		},
+		{
+			name:           "last page has no next",
+			params:         pagination.OffsetParams{Page: 4, PageSize: 10},
+			totalItems:     35,
+			wantTotalPages: 4,
+			wantHasPrev:    true,
+			wantHasNext:    false,
+		},
 	}
-	if p.PageSize != 50 {
-		t.Errorf("expected page_size=50, got %d", p.PageSize)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pg := tc.params.ToPagination(tc.totalItems)
+			if pg.TotalPages != tc.wantTotalPages {
+				t.Errorf("expected TotalPages=%d, got %d", tc.wantTotalPages, pg.TotalPages)
+			}
+			if pg.HasPrev != tc.wantHasPrev {
+				t.Errorf("expected HasPrev=%v, got %v", tc.wantHasPrev, pg.HasPrev)
+			}
+			if pg.HasNext != tc.wantHasNext {
+				t.Errorf("expected HasNext=%v, got %v", tc.wantHasNext, pg.HasNext)
+			}
+			if pg.Total != tc.totalItems {
+				t.Errorf("expected Total=%d, got %d", tc.totalItems, pg.Total)
+			}
+		})
 	}
 }
 
-func TestParseOffsetParamsInvalidPage(t *testing.T) {
-	p := pagination.ParseOffsetParams(makeRequest("page=-1"))
-	if p.Page != 1 {
-		t.Errorf("expected page=1 for negative input, got %d", p.Page)
+func TestCursorParams_TableDriven(t *testing.T) {
+	tests := []struct {
+		name          string
+		queryString   string
+		wantLimit     int
+		wantDirection string
+		wantCursor    string
+	}{
+		{
+			name:          "empty query returns default limit=20, direction='next', cursor=''",
+			queryString:   "",
+			wantLimit:     20,
+			wantDirection: "next",
+			wantCursor:    "",
+		},
+		{
+			name:          "custom cursor parameters parsed accurately",
+			queryString:   "cursor=abc123&limit=5&direction=prev",
+			wantLimit:     5,
+			wantDirection: "prev",
+			wantCursor:    "abc123",
+		},
+		{
+			name:          "excessive limit is capped to default limit=20",
+			queryString:   "limit=999",
+			wantLimit:     20,
+			wantDirection: "next",
+			wantCursor:    "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := pagination.ParseCursorParams(makeRequest(tc.queryString))
+			if cp.Limit != tc.wantLimit {
+				t.Errorf("expected limit=%d, got %d", tc.wantLimit, cp.Limit)
+			}
+			if cp.Direction != tc.wantDirection {
+				t.Errorf("expected direction=%q, got %q", tc.wantDirection, cp.Direction)
+			}
+			if cp.Cursor != tc.wantCursor {
+				t.Errorf("expected cursor=%q, got %q", tc.wantCursor, cp.Cursor)
+			}
+		})
 	}
 }
 
-func TestParseOffsetParamsPageSizeMax(t *testing.T) {
-	p := pagination.ParseOffsetParams(makeRequest("page_size=200"))
-	if p.PageSize != 20 {
-		t.Errorf("expected capped page_size=20, got %d", p.PageSize)
-	}
-}
-
-func TestToPagination(t *testing.T) {
-	p := pagination.OffsetParams{Page: 2, PageSize: 10}
-	pg := p.ToPagination(35)
-	if pg.TotalPages != 4 {
-		t.Errorf("expected 4 total pages, got %d", pg.TotalPages)
-	}
-	if !pg.HasPrev {
-		t.Error("expected HasPrev=true for page 2")
-	}
-	if !pg.HasNext {
-		t.Error("expected HasNext=true on page 2 of 4")
-	}
-	if pg.Total != 35 {
-		t.Errorf("expected total=35, got %d", pg.Total)
-	}
-}
-
-func TestToPaginationLastPage(t *testing.T) {
-	p := pagination.OffsetParams{Page: 4, PageSize: 10}
-	pg := p.ToPagination(35)
-	if pg.HasNext {
-		t.Error("expected HasNext=false on last page")
-	}
-	if !pg.HasPrev {
-		t.Error("expected HasPrev=true on page 4")
-	}
-}
-
-func TestToPaginationFirstPage(t *testing.T) {
-	p := pagination.OffsetParams{Page: 1, PageSize: 10}
-	pg := p.ToPagination(35)
-	if pg.HasPrev {
-		t.Error("expected HasPrev=false on first page")
-	}
-}
-
-func TestParseCursorParamsDefaults(t *testing.T) {
-	cp := pagination.ParseCursorParams(makeRequest(""))
-	if cp.Limit != 20 {
-		t.Errorf("expected limit=20, got %d", cp.Limit)
-	}
-	if cp.Direction != "next" {
-		t.Errorf("expected direction='next', got %q", cp.Direction)
-	}
-	if cp.Cursor != "" {
-		t.Errorf("expected empty cursor, got %q", cp.Cursor)
-	}
-}
-
-func TestParseCursorParamsCustom(t *testing.T) {
-	cp := pagination.ParseCursorParams(makeRequest("cursor=abc123&limit=5&direction=prev"))
-	if cp.Cursor != "abc123" {
-		t.Errorf("expected cursor='abc123', got %q", cp.Cursor)
-	}
-	if cp.Limit != 5 {
-		t.Errorf("expected limit=5, got %d", cp.Limit)
-	}
-	if cp.Direction != "prev" {
-		t.Errorf("expected direction='prev', got %q", cp.Direction)
-	}
-}
-
-func TestParseCursorParamsLimitMax(t *testing.T) {
-	cp := pagination.ParseCursorParams(makeRequest("limit=999"))
-	if cp.Limit != 20 {
-		t.Errorf("expected capped limit=20, got %d", cp.Limit)
-	}
-}
-
-func TestApply(t *testing.T) {
+func TestApply_TableDriven(t *testing.T) {
 	db := &gorm.DB{
 		Config: &gorm.Config{DryRun: true},
 	}

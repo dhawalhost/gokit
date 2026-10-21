@@ -15,75 +15,102 @@ var noopHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) 
 	w.WriteHeader(http.StatusOK)
 })
 
-func TestInitMetricsRegisters(t *testing.T) {
-	reg := prometheus.NewRegistry()
+func TestObservability_Metrics_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "prometheus metrics registry allows histogram registration",
+			run: func(t *testing.T) {
+				reg := prometheus.NewRegistry()
+				duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+					Namespace: "test",
+					Name:      "http_request_duration_seconds",
+					Help:      "Histogram of HTTP request latencies.",
+					Buckets:   prometheus.DefBuckets,
+				}, []string{"method", "path", "status"})
 
-	duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "test",
-		Name:      "http_request_duration_seconds",
-		Help:      "Histogram of HTTP request latencies.",
-		Buckets:   prometheus.DefBuckets,
-	}, []string{"method", "path", "status"})
+				if err := reg.Register(duration); err != nil {
+					t.Fatalf("failed to register histogram: %v", err)
+				}
+			},
+		},
+		{
+			name: "MetricsHandler responds with 200 OK",
+			run: func(t *testing.T) {
+				observability.InitMetrics("testobs")
+				h := observability.MetricsHandler()
+				if h == nil {
+					t.Fatal("expected non-nil handler")
+				}
+				w := httptest.NewRecorder()
+				r, _ := http.NewRequest(http.MethodGet, "/metrics", nil)
+				h.ServeHTTP(w, r)
+				if w.Code != http.StatusOK {
+					t.Errorf("expected 200, got %d", w.Code)
+				}
+			},
+		},
+		{
+			name: "Metrics middleware records request and passes through",
+			run: func(t *testing.T) {
+				observability.InitMetrics("testmw")
+				mw := observability.Metrics()
+				w := httptest.NewRecorder()
+				r, _ := http.NewRequest(http.MethodGet, "/test", nil)
+				mw(noopHandler).ServeHTTP(w, r)
+				if w.Code != http.StatusOK {
+					t.Errorf("expected 200, got %d", w.Code)
+				}
+			},
+		},
+	}
 
-	if err := reg.Register(duration); err != nil {
-		t.Fatalf("failed to register histogram: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
 	}
 }
 
-func TestMetricsHandlerResponds(t *testing.T) {
-	observability.InitMetrics("testobs")
-	h := observability.MetricsHandler()
-	if h == nil {
-		t.Fatal("expected non-nil handler")
+func TestObservability_Tracing_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    http.Handler
+		wantStatus int
+	}{
+		{
+			name:       "tracing middleware wraps successful handler",
+			handler:    noopHandler,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "tracing middleware records 5xx status code",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			}),
+			wantStatus: http.StatusInternalServerError,
+		},
 	}
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/metrics", nil)
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-}
 
-func TestMetricsMiddleware(t *testing.T) {
-	observability.InitMetrics("testmw")
-	mw := observability.Metrics()
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/test", nil)
-	mw(noopHandler).ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mw := observability.Tracing("test-service")
+			w := httptest.NewRecorder()
+			r, _ := http.NewRequest(http.MethodGet, "/trace", nil)
+			mw(tc.handler).ServeHTTP(w, r)
 
-func TestTracingMiddleware(t *testing.T) {
-	mw := observability.Tracing("test-service")
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/trace", nil)
-	mw(noopHandler).ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, w.Code)
+			}
+		})
 	}
-}
 
-func TestInitTracerDisabled(t *testing.T) {
+	// Test InitTracer disabled
 	shutdown, err := observability.InitTracer(context.Background(), config.TelemetryConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("InitTracer disabled: %v", err)
 	}
 	if err := shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
-	}
-}
-
-func TestTracingMiddlewareWith5xx(t *testing.T) {
-	mw := observability.Tracing("test-service")
-	errHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/trace", nil)
-	mw(errHandler).ServeHTTP(w, r)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d", w.Code)
 	}
 }

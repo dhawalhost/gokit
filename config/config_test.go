@@ -10,68 +10,97 @@ import (
 	"time"
 )
 
-func TestLoadDefaults(t *testing.T) {
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+func TestConfig_Load_TableDriven(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T) (string, func())
+		wantErr   bool
+		checkConf func(t *testing.T, cfg *Config)
+	}{
+		{
+			name: "default configuration without file or env overrides",
+			setup: func(_ *testing.T) (string, func()) {
+				return "", func() {}
+			},
+			wantErr: false,
+			checkConf: func(t *testing.T, cfg *Config) {
+				if cfg.Server.Addr != ":8080" {
+					t.Errorf("expected :8080, got %q", cfg.Server.Addr)
+				}
+				if cfg.Server.ReadTimeout != 30*time.Second {
+					t.Errorf("expected 30s read timeout, got %v", cfg.Server.ReadTimeout)
+				}
+				if cfg.Server.WriteTimeout != 30*time.Second {
+					t.Errorf("expected 30s write timeout, got %v", cfg.Server.WriteTimeout)
+				}
+				if cfg.Server.IdleTimeout != 120*time.Second {
+					t.Errorf("expected 120s idle timeout, got %v", cfg.Server.IdleTimeout)
+				}
+				if cfg.Log.Level != "info" {
+					t.Errorf("expected log level 'info', got %q", cfg.Log.Level)
+				}
+				if cfg.Database.MaxOpenConns != 25 {
+					t.Errorf("expected 25 max open conns, got %d", cfg.Database.MaxOpenConns)
+				}
+			},
+		},
+		{
+			name: "environment variable overrides apply correctly",
+			setup: func(t *testing.T) (string, func()) {
+				t.Setenv("APP_SERVER_ADDR", ":9090")
+				t.Setenv("APP_LOG_LEVEL", "debug")
+				return "", func() {}
+			},
+			wantErr: false,
+			checkConf: func(t *testing.T, cfg *Config) {
+				if cfg.Server.Addr != ":9090" {
+					t.Errorf("expected :9090, got %q", cfg.Server.Addr)
+				}
+				if cfg.Log.Level != "debug" {
+					t.Errorf("expected 'debug', got %q", cfg.Log.Level)
+				}
+			},
+		},
+		{
+			name: "loads settings from valid YAML file",
+			setup: func(t *testing.T) (string, func()) {
+				f, err := os.CreateTemp(t.TempDir(), "*.yaml")
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = f.WriteString("server:\n  addr: \":7070\"\n")
+				_ = f.Close()
+				return f.Name(), func() { _ = os.Remove(f.Name()) }
+			},
+			wantErr: false,
+			checkConf: func(t *testing.T, cfg *Config) {
+				if cfg.Server.Addr != ":7070" {
+					t.Errorf("expected :7070, got %q", cfg.Server.Addr)
+				}
+			},
+		},
+		{
+			name: "nonexistent file path returns error",
+			setup: func(_ *testing.T) (string, func()) {
+				return "/nonexistent/path/config.yaml", func() {}
+			},
+			wantErr: true,
+		},
 	}
-	if cfg.Server.Addr != ":8080" {
-		t.Errorf("expected :8080, got %q", cfg.Server.Addr)
-	}
-	if cfg.Server.ReadTimeout != 30*time.Second {
-		t.Errorf("expected 30s read timeout, got %v", cfg.Server.ReadTimeout)
-	}
-	if cfg.Server.WriteTimeout != 30*time.Second {
-		t.Errorf("expected 30s write timeout, got %v", cfg.Server.WriteTimeout)
-	}
-	if cfg.Server.IdleTimeout != 120*time.Second {
-		t.Errorf("expected 120s idle timeout, got %v", cfg.Server.IdleTimeout)
-	}
-	if cfg.Log.Level != "info" {
-		t.Errorf("expected log level 'info', got %q", cfg.Log.Level)
-	}
-	if cfg.Database.MaxOpenConns != 25 {
-		t.Errorf("expected 25 max open conns, got %d", cfg.Database.MaxOpenConns)
-	}
-}
 
-func TestLoadEnvOverride(t *testing.T) {
-	t.Setenv("APP_SERVER_ADDR", ":9090")
-	t.Setenv("APP_LOG_LEVEL", "debug")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path, cleanup := tc.setup(t)
+			defer cleanup()
 
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Server.Addr != ":9090" {
-		t.Errorf("expected :9090, got %q", cfg.Server.Addr)
-	}
-	if cfg.Log.Level != "debug" {
-		t.Errorf("expected 'debug', got %q", cfg.Log.Level)
-	}
-}
-
-func TestLoadYAMLFile(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "*.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = f.WriteString("server:\n  addr: \":7070\"\n")
-	_ = f.Close()
-
-	cfg, err := Load(f.Name())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Server.Addr != ":7070" {
-		t.Errorf("expected :7070, got %q", cfg.Server.Addr)
-	}
-}
-
-func TestLoadBadFile(t *testing.T) {
-	_, err := Load("/nonexistent/path/config.yaml")
-	if err == nil {
-		t.Fatal("expected error for nonexistent config file")
+			cfg, err := Load(path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr=%v, got=%v", tc.wantErr, err)
+			}
+			if !tc.wantErr && tc.checkConf != nil {
+				tc.checkConf(t, cfg)
+			}
+		})
 	}
 }
 
@@ -84,126 +113,162 @@ func TestMustLoadPanicsOnError(t *testing.T) {
 	MustLoad("/nonexistent/path/config.yaml")
 }
 
-func TestConfig_StructMasking(t *testing.T) {
-	cfg := Config{
-		Database: DatabaseConfig{
-			DSN: "postgres://dbuser:supersecretpass@localhost:5432/production_db?sslmode=disable",
+func TestConfig_StructMasking_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "redis config masks password in JSON and String",
+			run: func(t *testing.T) {
+				r := RedisConfig{Addr: "localhost:6379", Password: "redis-secret-token"}
+				redisJSON, err := json.Marshal(r)
+				if err != nil {
+					t.Fatalf("json.Marshal(r): %v", err)
+				}
+				if strings.Contains(string(redisJSON), "redis-secret-token") {
+					t.Errorf("Redis password leaked in JSON: %s", redisJSON)
+				}
+				if !strings.Contains(string(redisJSON), "********") {
+					t.Errorf("Redis password not redacted with ******** in JSON: %s", redisJSON)
+				}
+				if strings.Contains(r.String(), "redis-secret-token") {
+					t.Errorf("Redis password leaked in String(): %s", r.String())
+				}
+			},
 		},
-		Redis: RedisConfig{
-			Addr:     "localhost:6379",
-			Password: "redis-secret-token",
+		{
+			name: "database DSN masks URL format password",
+			run: func(t *testing.T) {
+				db := DatabaseConfig{
+					DSN: "postgres://dbuser:supersecretpass@localhost:5432/production_db?sslmode=disable",
+				}
+				dbJSON, err := json.Marshal(db)
+				if err != nil {
+					t.Fatalf("json.Marshal(db): %v", err)
+				}
+				if strings.Contains(string(dbJSON), "supersecretpass") {
+					t.Errorf("Database password leaked in JSON: %s", dbJSON)
+				}
+				if !strings.Contains(string(dbJSON), "dbuser:xxxxx@localhost:5432") {
+					t.Errorf("Database URL password not redacted with xxxxx: %s", dbJSON)
+				}
+			},
 		},
-		JWT: JWTConfig{
-			Secret: "jwt-signing-key-very-secret",
+		{
+			name: "database DSN masks key-value format password",
+			run: func(t *testing.T) {
+				kvDB := DatabaseConfig{
+					DSN: "host=localhost user=admin password=kvsecret dbname=mydb",
+				}
+				kvJSON, _ := json.Marshal(kvDB)
+				if strings.Contains(string(kvJSON), "kvsecret") {
+					t.Errorf("Database KV password leaked in JSON: %s", kvJSON)
+				}
+				if !strings.Contains(string(kvJSON), "password=********") {
+					t.Errorf("Database KV password not redacted with ******** in JSON: %s", kvJSON)
+				}
+			},
+		},
+		{
+			name: "JWT secret masked in JSON",
+			run: func(t *testing.T) {
+				j := JWTConfig{Secret: "jwt-signing-key-very-secret"}
+				jwtJSON, err := json.Marshal(j)
+				if err != nil {
+					t.Fatalf("json.Marshal(j): %v", err)
+				}
+				if strings.Contains(string(jwtJSON), "jwt-signing-key-very-secret") {
+					t.Errorf("JWT secret leaked in JSON: %s", jwtJSON)
+				}
+				if !strings.Contains(string(jwtJSON), "********") {
+					t.Errorf("JWT secret not redacted with ******** in JSON: %s", jwtJSON)
+				}
+			},
+		},
+		{
+			name: "top-level Config Masked method redacts all secrets",
+			run: func(t *testing.T) {
+				cfg := Config{
+					Database: DatabaseConfig{DSN: "postgres://dbuser:supersecretpass@localhost:5432/db"},
+					Redis:    RedisConfig{Password: "redis-secret-token"},
+					JWT:      JWTConfig{Secret: "jwt-signing-key"},
+				}
+				masked := cfg.Masked()
+				if masked.Redis.Password != "********" {
+					t.Errorf("Masked() failed for Redis password: got %s", masked.Redis.Password)
+				}
+				if masked.JWT.Secret != "********" {
+					t.Errorf("Masked() failed for JWT secret: got %s", masked.JWT.Secret)
+				}
+				if strings.Contains(masked.Database.DSN, "supersecretpass") {
+					t.Errorf("Masked() failed for Database DSN: got %s", masked.Database.DSN)
+				}
+			},
 		},
 	}
 
-	// 1. Test Redis JSON & String Masking
-	redisJSON, err := json.Marshal(cfg.Redis)
-	if err != nil {
-		t.Fatalf("json.Marshal(cfg.Redis): %v", err)
-	}
-	if strings.Contains(string(redisJSON), "redis-secret-token") {
-		t.Errorf("Redis password leaked in JSON: %s", redisJSON)
-	}
-	if !strings.Contains(string(redisJSON), "********") {
-		t.Errorf("Redis password not redacted with ******** in JSON: %s", redisJSON)
-	}
-	if strings.Contains(cfg.Redis.String(), "redis-secret-token") {
-		t.Errorf("Redis password leaked in String(): %s", cfg.Redis.String())
-	}
-
-	// 2. Test Database DSN Masking (URL format uses Go's standard net/url xxxxx)
-	dbJSON, err := json.Marshal(cfg.Database)
-	if err != nil {
-		t.Fatalf("json.Marshal(cfg.Database): %v", err)
-	}
-	if strings.Contains(string(dbJSON), "supersecretpass") {
-		t.Errorf("Database password leaked in JSON: %s", dbJSON)
-	}
-	if !strings.Contains(string(dbJSON), "dbuser:xxxxx@localhost:5432") {
-		t.Errorf("Database URL password not redacted with xxxxx: %s", dbJSON)
-	}
-
-	// 3. Test Database DSN Masking (Key-Value format uses ********)
-	kvDB := DatabaseConfig{
-		DSN: "host=localhost user=admin password=kvsecret dbname=mydb",
-	}
-	kvJSON, _ := json.Marshal(kvDB)
-	if strings.Contains(string(kvJSON), "kvsecret") {
-		t.Errorf("Database KV password leaked in JSON: %s", kvJSON)
-	}
-	if !strings.Contains(string(kvJSON), "password=********") {
-		t.Errorf("Database KV password not redacted with ******** in JSON: %s", kvJSON)
-	}
-
-	// 4. Test JWT Secret Masking
-	jwtJSON, err := json.Marshal(cfg.JWT)
-	if err != nil {
-		t.Fatalf("json.Marshal(cfg.JWT): %v", err)
-	}
-	if strings.Contains(string(jwtJSON), "jwt-signing-key-very-secret") {
-		t.Errorf("JWT secret leaked in JSON: %s", jwtJSON)
-	}
-	if !strings.Contains(string(jwtJSON), "********") {
-		t.Errorf("JWT secret not redacted with ******** in JSON: %s", jwtJSON)
-	}
-
-	// 5. Test Top-Level Config Masked() method
-	masked := cfg.Masked()
-	if masked.Redis.Password != "********" {
-		t.Errorf("Masked() failed for Redis password: got %s", masked.Redis.Password)
-	}
-	if masked.JWT.Secret != "********" {
-		t.Errorf("Masked() failed for JWT secret: got %s", masked.JWT.Secret)
-	}
-	if strings.Contains(masked.Database.DSN, "supersecretpass") {
-		t.Errorf("Masked() failed for Database DSN: got %s", masked.Database.DSN)
-	}
-
-	// 6. Test Top-Level Config String() & MarshalJSON()
-	cfgJSON, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("json.Marshal(cfg): %v", err)
-	}
-	if strings.Contains(string(cfgJSON), "supersecretpass") ||
-		strings.Contains(string(cfgJSON), "redis-secret-token") ||
-		strings.Contains(string(cfgJSON), "jwt-signing-key-very-secret") {
-		t.Errorf("Secrets leaked in top-level Config JSON: %s", cfgJSON)
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
 	}
 }
 
-func TestSecret_Masking(t *testing.T) {
+func TestSecret_Masking_TableDriven(t *testing.T) {
 	s := Secret("super-secret-password")
 
-	// Test Stringer implementation
-	if s.String() != "********" {
-		t.Errorf("Secret stringer failed: got %s, want ********", s)
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "Stringer prints masked asterisks",
+			test: func(t *testing.T) {
+				if s.String() != "********" {
+					t.Errorf("Secret stringer failed: got %s, want ********", s)
+				}
+			},
+		},
+		{
+			name: "GoStringer prints type and asterisks",
+			test: func(t *testing.T) {
+				if fmt.Sprintf("%#v", s) != "config.Secret(\"********\")" {
+					t.Errorf("Secret go-stringer failed: got %#v", s)
+				}
+			},
+		},
+		{
+			name: "JSON marshal produces quoted asterisks",
+			test: func(t *testing.T) {
+				b, _ := json.Marshal(s)
+				if string(b) != "\"********\"" {
+					t.Errorf("Secret JSON marshal failed: got %s, want \"********\"", b)
+				}
+			},
+		},
+		{
+			name: "Text marshal produces plain asterisks",
+			test: func(t *testing.T) {
+				txt, err := s.MarshalText()
+				if err != nil || string(txt) != "********" {
+					t.Errorf("Secret Text marshal failed: got %s, err %v", txt, err)
+				}
+			},
+		},
+		{
+			name: "Expose and Get reveal original plaintext",
+			test: func(t *testing.T) {
+				if s.Expose() != "super-secret-password" {
+					t.Errorf("Secret Expose() failed: got %s, want super-secret-password", s.Expose())
+				}
+				if s.Get() != "super-secret-password" {
+					t.Errorf("Secret Get() failed: got %s, want super-secret-password", s.Get())
+				}
+			},
+		},
 	}
 
-	// Test GoStringer implementation
-	if fmt.Sprintf("%#v", s) != "config.Secret(\"********\")" {
-		t.Errorf("Secret go-stringer failed: got %#v", s)
-	}
-
-	// Test JSON marshaling
-	b, _ := json.Marshal(s)
-	if string(b) != "\"********\"" {
-		t.Errorf("Secret JSON marshal failed: got %s, want \"********\"", b)
-	}
-
-	// Test Text marshaling
-	txt, err := s.MarshalText()
-	if err != nil || string(txt) != "********" {
-		t.Errorf("Secret Text marshal failed: got %s, err %v", txt, err)
-	}
-
-	// Test Expose() & Get()
-	if s.Expose() != "super-secret-password" {
-		t.Errorf("Secret Expose() failed: got %s, want super-secret-password", s.Expose())
-	}
-	if s.Get() != "super-secret-password" {
-		t.Errorf("Secret Get() failed: got %s, want super-secret-password", s.Get())
+	for _, tc := range tests {
+		t.Run(tc.name, tc.test)
 	}
 }
 
@@ -230,7 +295,6 @@ log:
 		t.Errorf("Initial log level mismatch: got %s", m.Get().Log.Level)
 	}
 
-	// Setup update hook
 	updated := make(chan bool, 1)
 	m.OnUpdate(func(cfg *Config) {
 		if cfg.Log.Level == "debug" {
@@ -240,7 +304,6 @@ log:
 
 	m.Watch()
 
-	// Update the file
 	newYaml := `
 server:
   addr: ":8080"

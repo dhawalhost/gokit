@@ -8,87 +8,121 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestNewDevelopment(t *testing.T) {
-	l, err := logger.New("debug", true)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+func TestLogger_Instantiation_TableDriven(t *testing.T) {
+	tests := []struct {
+		name        string
+		level       string
+		development bool
+		wantErr     bool
+	}{
+		{
+			name:        "valid development logger creates non-nil instance",
+			level:       "debug",
+			development: true,
+			wantErr:     false,
+		},
+		{
+			name:        "valid production logger creates non-nil instance",
+			level:       "info",
+			development: false,
+			wantErr:     false,
+		},
+		{
+			name:        "invalid log level returns error",
+			level:       "badlevel",
+			development: false,
+			wantErr:     true,
+		},
 	}
-	if l == nil {
-		t.Fatal("expected non-nil logger")
-	}
-}
 
-func TestNewProduction(t *testing.T) {
-	l, err := logger.New("info", false)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			l, err := logger.New(tc.level, tc.development)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr=%v, got=%v", tc.wantErr, err)
+			}
+			if !tc.wantErr && l == nil {
+				t.Fatal("expected non-nil logger")
+			}
+		})
 	}
-	if l == nil {
-		t.Fatal("expected non-nil logger")
-	}
-}
 
-func TestNewInvalidLevel(t *testing.T) {
-	_, err := logger.New("badlevel", false)
-	if err == nil {
-		t.Fatal("expected error for invalid log level")
-	}
-}
-
-func TestNewNop(t *testing.T) {
-	l := logger.NewNop()
-	if l == nil {
+	// Nop logger check
+	if l := logger.NewNop(); l == nil {
 		t.Fatal("expected non-nil nop logger")
 	}
 }
 
-func TestGlobal(t *testing.T) {
-	l := logger.Global()
-	if l == nil {
-		t.Fatal("expected non-nil global logger")
+func TestLogger_ContextAndGlobal_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "set and retrieve global logger",
+			run: func(t *testing.T) {
+				original := logger.Global()
+				if original == nil {
+					t.Fatal("expected non-nil default global logger")
+				}
+				nop := zap.NewNop()
+				logger.SetGlobal(nop)
+				if logger.Global() != nop {
+					t.Error("SetGlobal did not update the global logger")
+				}
+				logger.SetGlobal(original)
+			},
+		},
+		{
+			name: "WithContext and FromContext roundtrip maintains logger instance",
+			run: func(t *testing.T) {
+				l := zap.NewNop()
+				ctx := logger.WithContext(context.Background(), l)
+				got := logger.FromContext(ctx)
+				if got != l {
+					t.Error("FromContext should return the same logger stored by WithContext")
+				}
+			},
+		},
+		{
+			name: "FromContext on empty context falls back to global logger",
+			run: func(t *testing.T) {
+				got := logger.FromContext(context.Background())
+				if got == nil {
+					t.Fatal("expected non-nil logger from empty context")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
 	}
 }
 
-func TestSetGlobal(t *testing.T) {
-	original := logger.Global()
-	nop := zap.NewNop()
-	logger.SetGlobal(nop)
-	if logger.Global() != nop {
-		t.Error("SetGlobal did not update the global logger")
-	}
-	// Restore
-	logger.SetGlobal(original)
-}
-
-func TestWithContextFromContext(t *testing.T) {
-	l := zap.NewNop()
-	ctx := logger.WithContext(context.Background(), l)
-	got := logger.FromContext(ctx)
-	if got != l {
-		t.Error("FromContext should return the same logger stored by WithContext")
-	}
-}
-
-func TestFromContextFallsBack(t *testing.T) {
-	got := logger.FromContext(context.Background())
-	if got == nil {
-		t.Fatal("expected non-nil logger from empty context")
-	}
-}
-
-func TestLogger_AutomaticMasking(t *testing.T) {
+func TestLogger_AutomaticMasking_TableDriven(t *testing.T) {
 	l, err := logger.New("info", false)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if l == nil {
-		t.Fatal("expected non-nil logger")
+
+	tests := []struct {
+		name   string
+		fields []zap.Field
+	}{
+		{
+			name: "sensitive credentials and tokens are logged safely",
+			fields: []zap.Field{
+				zap.String("password", "super-secret-123"),
+				zap.String("api_key", "sk_live_12345"),
+				zap.String("username", "alice"),
+			},
+		},
 	}
 
-	// Should not panic or fail when logging masked fields
-	l.Info("user login",
-		zap.String("password", "super-secret-123"),
-		zap.String("api_key", "sk_live_12345"),
-		zap.String("username", "alice"),
-	)
+	for _, tc := range tests {
+		t.Run(tc.name, func(_ *testing.T) {
+			l.Info("user login", tc.fields...)
+		})
+	}
 }

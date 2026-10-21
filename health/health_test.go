@@ -20,76 +20,127 @@ type failChecker struct{ msg string }
 
 func (f failChecker) HealthCheck(_ context.Context) error { return fmt.Errorf("%s", f.msg) }
 
-func TestLiveHandler(t *testing.T) {
-	h := health.NewHandler()
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/health/live", nil)
-	h.LiveHandler().ServeHTTP(w, r)
+func TestHealth_LiveAndReady_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func() (*health.Handler, string)
+		wantStatus int
+		verify     func(t *testing.T, w *httptest.ResponseRecorder)
+	}{
+		{
+			name: "live endpoint returns 200 OK with status ok",
+			setup: func() (*health.Handler, string) {
+				return health.NewHandler(), "/health/live"
+			},
+			wantStatus: http.StatusOK,
+			verify: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var body map[string]string
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if body["status"] != "ok" {
+					t.Errorf("expected status 'ok', got %q", body["status"])
+				}
+			},
+		},
+		{
+			name: "ready endpoint with all passing checkers returns 200 OK and status ready",
+			setup: func() (*health.Handler, string) {
+				h := health.NewHandler()
+				h.Register("db", okChecker{})
+				return h, "/health/ready"
+			},
+			wantStatus: http.StatusOK,
+			verify: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var body map[string]string
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if body["status"] != "ready" {
+					t.Errorf("expected 'ready', got %q", body["status"])
+				}
+			},
+		},
+		{
+			name: "ready endpoint with failing checker returns 503 Service Unavailable",
+			setup: func() (*health.Handler, string) {
+				h := health.NewHandler()
+				h.Register("db", okChecker{})
+				h.Register("redis", failChecker{msg: "connection refused"})
+				return h, "/health/ready"
+			},
+			wantStatus: http.StatusServiceUnavailable,
+			verify: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var body map[string]interface{}
+				_ = json.NewDecoder(w.Body).Decode(&body)
+				if body["status"] != "not ready" {
+					t.Errorf("expected status 'not ready', got %v", body["status"])
+				}
+			},
+		},
+		{
+			name: "ready endpoint without registered checkers returns 200 OK",
+			setup: func() (*health.Handler, string) {
+				return health.NewHandler(), "/health/ready"
+			},
+			wantStatus: http.StatusOK,
+			verify: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var body map[string]string
+				_ = json.NewDecoder(w.Body).Decode(&body)
+				if body["status"] != "ready" {
+					t.Errorf("expected status ready, got %v", body["status"])
+				}
+			},
+		},
+	}
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-	var body map[string]string
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body["status"] != "ok" {
-		t.Errorf("expected status 'ok', got %q", body["status"])
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, path := tc.setup()
+			w := httptest.NewRecorder()
+			r, _ := http.NewRequest(http.MethodGet, path, nil)
+
+			if path == "/health/live" {
+				h.LiveHandler().ServeHTTP(w, r)
+			} else {
+				h.ReadyHandler().ServeHTTP(w, r)
+			}
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, w.Code)
+			}
+			if tc.verify != nil {
+				tc.verify(t, w)
+			}
+		})
 	}
 }
 
-func TestReadyHandlerAllOK(t *testing.T) {
-	h := health.NewHandler()
-	h.Register("db", okChecker{})
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/health/ready", nil)
-	h.ReadyHandler().ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+func TestHealth_HandlerTimeouts_TableDriven(t *testing.T) {
+	tests := []struct {
+		name         string
+		liveTimeout  time.Duration
+		readyTimeout time.Duration
+	}{
+		{
+			name:         "custom timeouts configured on new handler",
+			liveTimeout:  2 * time.Second,
+			readyTimeout: 5 * time.Second,
+		},
 	}
-	var body map[string]string
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body["status"] != "ready" {
-		t.Errorf("expected 'ready', got %q", body["status"])
-	}
-}
 
-func TestReadyHandlerWithFailure(t *testing.T) {
-	h := health.NewHandler()
-	h.Register("db", okChecker{})
-	h.Register("redis", failChecker{msg: "connection refused"})
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/health/ready", nil)
-	h.ReadyHandler().ServeHTTP(w, r)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503, got %d", w.Code)
-	}
-}
-
-func TestReadyHandlerNoCheckers(t *testing.T) {
-	h := health.NewHandler()
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/health/ready", nil)
-	h.ReadyHandler().ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestNewHandlerWithTimeouts(t *testing.T) {
-	h := health.NewHandlerWithTimeouts(2*time.Second, 5*time.Second)
-	if h == nil {
-		t.Fatal("expected non-nil handler")
-	}
-	w := httptest.NewRecorder()
-	r, _ := http.NewRequest(http.MethodGet, "/health/live", nil)
-	h.LiveHandler().ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := health.NewHandlerWithTimeouts(tc.liveTimeout, tc.readyTimeout)
+			if h == nil {
+				t.Fatal("expected non-nil handler")
+			}
+			w := httptest.NewRecorder()
+			r, _ := http.NewRequest(http.MethodGet, "/health/live", nil)
+			h.LiveHandler().ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected 200, got %d", w.Code)
+			}
+		})
 	}
 }
