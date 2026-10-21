@@ -9,11 +9,11 @@ import (
 // AppError is a structured error carrying an HTTP status code, a machine-readable
 // code, a human-readable message, optional details, and an optional cause.
 type AppError struct {
-	Code       string      `json:"code"`
-	Message    string      `json:"message"`
-	Details    interface{} `json:"details,omitempty"`
-	HTTPStatus int         `json:"-"`
-	Err        error       `json:"-"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	Details    any    `json:"details,omitempty"`
+	HTTPStatus int    `json:"-"`
+	Err        error  `json:"-"`
 }
 
 // Error implements the error interface.
@@ -77,8 +77,20 @@ func ServiceUnavailable(message string) *AppError {
 	return New(http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", message)
 }
 
+// Wrap wraps an underlying internal error with a safe, public-facing user message.
+// The internal error is preserved in Err for logging/debugging and is excluded
+// from JSON serialization, preventing internal leakages (e.g. database/SQL traces).
+func Wrap(err error, publicMessage string) *AppError {
+	if err == nil {
+		return nil
+	}
+	ae := Internal(publicMessage)
+	ae.Err = err
+	return ae
+}
+
 // WithDetails attaches detail payload to an AppError.
-func WithDetails(err *AppError, details interface{}) *AppError {
+func WithDetails(err *AppError, details any) *AppError {
 	err.Details = details
 	return err
 }

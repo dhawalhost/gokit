@@ -3,6 +3,7 @@
 # Run all unit tests.
 test:
 	go test \
+		./bloomfilter/... \
 		./circuitbreaker/... \
 		./config/... \
 		./crypto/... \
@@ -22,6 +23,7 @@ test:
 # Run tests with the race detector.
 test-race:
 	go test -race \
+		./bloomfilter/... \
 		./circuitbreaker/... \
 		./config/... \
 		./crypto/... \
@@ -41,6 +43,7 @@ test-race:
 # Generate coverage report (opens in browser via 'go tool cover -html').
 cover:
 	go test -coverprofile=coverage.out -covermode=atomic \
+		./bloomfilter/... \
 		./circuitbreaker/... \
 		./config/... \
 		./crypto/... \
@@ -82,3 +85,9 @@ hooks:
 	git config core.hooksPath .githooks
 	chmod +x .githooks/pre-commit
 	@echo "Git hooks installed from .githooks/"
+
+# Run integration tests (requires external services).
+test-integration:
+	@echo "Running integration tests (requires PostgreSQL and Redis)..."
+	@echo "Set TEST_DATABASE_DSN and TEST_REDIS_ADDR environment variables"
+	go test -tags=integration -v ./test/integration/...
