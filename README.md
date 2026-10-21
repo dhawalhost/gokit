@@ -45,6 +45,9 @@
 | `bloomfilter` | In-memory and Redis-backed Bloom filter for probabilistic set membership |
 | `client` | Resilient outbound HTTP client with jittered exponential backoff, circuit breaker integration, tracing, and body replay |
 | `distlock` | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
+| `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
+| `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
+| `multitenancy` | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
@@ -403,6 +406,79 @@ store.Delete(ctx) // reset
 - Lower `falsePositiveRate` → more bits / memory, fewer false positives.
 - Higher `expectedItems` → larger bit array; accuracy is maintained.
 - Use `EstimatedFalsePositiveRate()` at runtime to decide when to rebuild the filter.
+
+### `audit`
+
+Compliance-ready audit logging for SOC2, HIPAA, and ISO 27001 requirements with automatic context enrichment and PII masking:
+
+```go
+import "github.com/dhawalhost/gokit/audit"
+
+// Setup recorder with async non-blocking sink or logger sink
+sink := audit.NewAsyncSink(audit.NewLoggerSink(zapLogger), audit.AsyncSinkConfig{
+    BufferSize: 2048,
+    BatchSize:  50,
+})
+defer sink.Close()
+
+recorder := audit.NewRecorder(sink)
+
+// Fluent audit event recording
+err := recorder.NewEvent("billing.subscription.upgrade").
+    WithActorUser("usr-123", "alice@corp.com", "Alice Smith", "admin").
+    WithResource("subscription", "sub-456", "Enterprise Tier").
+    WithChange("plan", "starter", "enterprise").
+    WithMetadata("payment_method", "pm_card_visa").
+    Record(ctx) // automatically enriches tenant_id, request_id, client_ip
+```
+
+### `outbox`
+
+Transactional Outbox pattern preventing the dual-write problem between database transactions and message brokers:
+
+```go
+import "github.com/dhawalhost/gokit/outbox"
+
+// 1. Transactionally store business data and outbox event in the same DB commit
+tx := db.GORM.Begin()
+tx.Create(&order)
+msg, err := outbox.Enqueue(ctx, tx, "orders.created", order.ID, payload, map[string]string{
+    "traceparent": currentTraceHeader,
+})
+tx.Commit()
+
+// 2. Background relay dispatches events to Kafka / RabbitMQ / SQS with retry backoffs
+relay := outbox.NewRelay(outbox.NewGORMStore(db.GORM), publisher, outbox.RelayConfig{
+    BatchSize:    100,
+    PollInterval: 500 * time.Millisecond,
+    MaxRetries:   5,
+})
+relay.Start(ctx)
+defer relay.Stop()
+```
+
+### `multitenancy`
+
+Tenant data isolation across databases (Postgres RLS session variables & GORM scopes) and Redis caches:
+
+```go
+import "github.com/dhawalhost/gokit/multitenancy"
+
+// 1. Strict HTTP tenant enforcement middleware
+r.Use(multitenancy.RequireTenant())
+
+// 2. Scoped database queries (GORM scope or PostgreSQL RLS session injection)
+db.GORM.Scopes(multitenancy.ScopeFromContext(ctx)).Find(&invoices)
+
+err := multitenancy.WithTenantTx(ctx, db.GORM, tenantID, func(tx *gorm.DB) error {
+    // Executes SET LOCAL app.current_tenant = tenantID
+    return tx.Find(&invoices).Error
+})
+
+// 3. Tenant-isolated Redis cache (auto-prefixes "tenant:<tenant_id>:<key>")
+scopedCache := multitenancy.NewContextScopedCache(redisCache)
+scopedCache.Set(ctx, "session:1", userData, time.Hour) // isolated per tenant
+```
 
 ---
 

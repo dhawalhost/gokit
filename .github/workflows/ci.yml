@@ -45,6 +45,7 @@ jobs:
       - name: Test
         run: |
           go test -race -coverprofile=coverage.out -covermode=atomic \
+            ./audit/... \
             ./bloomfilter/... \
             ./circuitbreaker/... \
             ./client/... \
@@ -57,7 +58,9 @@ jobs:
             ./idgen/... \
             ./logger/... \
             ./middleware/... \
+            ./multitenancy/... \
             ./observability/... \
+            ./outbox/... \
             ./pagination/... \
             ./ratelimit/... \
             ./response/... \
