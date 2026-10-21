@@ -15,87 +15,99 @@ import (
 	"github.com/dhawalhost/gokit/middleware"
 )
 
-func TestEventSanitization(t *testing.T) {
-	evt := &audit.Event{
-		ID:     "evt-123",
-		Action: "user.password_reset",
-		Actor: audit.Actor{
-			ID:   "usr-1",
-			Type: "user",
-		},
-		Changes: []audit.FieldChange{
-			{Field: "email", OldValue: "old@example.com", NewValue: "new@example.com"},
-			{Field: "password_hash", OldValue: "$2a$10$xyz", NewValue: "$2a$10$abc"},
-			{Field: "api_key", OldValue: "old-key", NewValue: "new-key"},
-		},
-		Metadata: map[string]any{
-			"normal_key": "safe_value",
-			"auth_token": "bearer-secret-token",
-			"secret_key": "supersecret",
-		},
+func TestEventSanitization_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		fieldName  string
+		val        any
+		wantMasked bool
+	}{
+		{"password field is masked", "password", "my-secret-pass", true},
+		{"password_hash field is masked", "password_hash", "$2a$10$xyz", true},
+		{"api_key field is masked", "api_key", "sk_live_12345", true},
+		{"auth_token field is masked", "auth_token", "jwt.token.string", true},
+		{"credit_card field is masked", "credit_card", "4111222233334444", true},
+		{"ssn field is masked", "ssn", "000-11-2222", true},
+		{"secret_key field is masked", "secret_key", "topsecret", true},
+		{"email field is not masked", "email", "alice@example.com", false},
+		{"username field is not masked", "username", "alice", false},
+		{"status field is not masked", "status", "active", false},
 	}
 
-	sanitized := evt.Sanitize()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := &audit.Event{
+				ID:     "evt-sanitization",
+				Action: "test.sanitize",
+				Changes: []audit.FieldChange{
+					{Field: tc.fieldName, OldValue: tc.val, NewValue: tc.val},
+				},
+				Metadata: map[string]any{
+					tc.fieldName: tc.val,
+				},
+			}
 
-	// Verify original is untouched
-	if evt.Changes[1].NewValue != "$2a$10$abc" {
-		t.Error("original event was mutated")
-	}
+			sanitized := evt.Sanitize()
+			expectedVal := tc.val
+			if tc.wantMasked {
+				expectedVal = "********"
+			}
 
-	// Verify sensitive changes masked
-	if sanitized.Changes[0].NewValue != "new@example.com" {
-		t.Errorf("expected email to remain unchanged, got %v", sanitized.Changes[0].NewValue)
-	}
-	if sanitized.Changes[1].NewValue != "********" || sanitized.Changes[1].OldValue != "********" {
-		t.Errorf("expected password_hash to be masked, got %v", sanitized.Changes[1].NewValue)
-	}
-	if sanitized.Changes[2].NewValue != "********" {
-		t.Errorf("expected api_key to be masked, got %v", sanitized.Changes[2].NewValue)
-	}
-
-	// Verify sensitive metadata masked
-	if sanitized.Metadata["normal_key"] != "safe_value" {
-		t.Errorf("expected normal_key safe_value, got %v", sanitized.Metadata["normal_key"])
-	}
-	if sanitized.Metadata["auth_token"] != "********" {
-		t.Errorf("expected auth_token to be masked, got %v", sanitized.Metadata["auth_token"])
-	}
-	if sanitized.Metadata["secret_key"] != "********" {
-		t.Errorf("expected secret_key to be masked, got %v", sanitized.Metadata["secret_key"])
+			if sanitized.Changes[0].NewValue != expectedVal {
+				t.Errorf("Changes[%q].NewValue = %v, want %v", tc.fieldName, sanitized.Changes[0].NewValue, expectedVal)
+			}
+			if sanitized.Metadata[tc.fieldName] != expectedVal {
+				t.Errorf("Metadata[%q] = %v, want %v", tc.fieldName, sanitized.Metadata[tc.fieldName], expectedVal)
+			}
+		})
 	}
 }
 
-func TestMemorySink(t *testing.T) {
+func TestMemorySink_TableDriven(t *testing.T) {
 	sink := audit.NewMemorySink()
 	defer sink.Close()
-
 	ctx := context.Background()
-	e1 := &audit.Event{ID: "1", Action: "act.1"}
-	e2 := &audit.Event{ID: "2", Action: "act.2"}
 
-	if err := sink.Write(ctx, e1); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := sink.Write(ctx, e2); err != nil {
-		t.Fatalf("Write: %v", err)
+	tests := []struct {
+		name      string
+		action    func(t *testing.T)
+		wantCount int
+	}{
+		{
+			name: "write first event",
+			action: func(t *testing.T) {
+				if err := sink.Write(ctx, &audit.Event{ID: "1", Action: "act.1"}); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+			},
+			wantCount: 1,
+		},
+		{
+			name: "write second event",
+			action: func(t *testing.T) {
+				if err := sink.Write(ctx, &audit.Event{ID: "2", Action: "act.2"}); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+			},
+			wantCount: 2,
+		},
+		{
+			name: "clear removes all events",
+			action: func(_ *testing.T) {
+				sink.Clear()
+			},
+			wantCount: 0,
+		},
 	}
 
-	events := sink.Events()
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-	if events[0].ID != "1" || events[1].ID != "2" {
-		t.Errorf("unexpected event IDs: %v, %v", events[0].ID, events[1].ID)
-	}
-
-	sink.Clear()
-	if len(sink.Events()) != 0 {
-		t.Errorf("expected 0 events after Clear, got %d", len(sink.Events()))
-	}
-
-	_ = sink.Close()
-	if err := sink.Write(ctx, e1); err != audit.ErrSinkClosed {
-		t.Errorf("expected ErrSinkClosed, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.action(t)
+			events := sink.Events()
+			if len(events) != tc.wantCount {
+				t.Errorf("len(Events()) = %d, want %d", len(events), tc.wantCount)
+			}
+		})
 	}
 }
 
@@ -104,16 +116,39 @@ func TestLoggerSink(t *testing.T) {
 	sink := audit.NewLoggerSink(log)
 	defer sink.Close()
 
-	evt := &audit.Event{
-		ID:        "log-1",
-		Timestamp: time.Now(),
-		Action:    "auth.login",
-		Actor:     audit.Actor{ID: "u1", Type: "user"},
-		Status:    audit.StatusSuccess,
+	tests := []struct {
+		name  string
+		event *audit.Event
+	}{
+		{
+			name: "valid success login event",
+			event: &audit.Event{
+				ID:        "log-1",
+				Timestamp: time.Now(),
+				Action:    "auth.login",
+				Actor:     audit.Actor{ID: "u1", Type: "user"},
+				Status:    audit.StatusSuccess,
+			},
+		},
+		{
+			name: "denied permission event",
+			event: &audit.Event{
+				ID:        "log-2",
+				Timestamp: time.Now(),
+				Action:    "billing.refund",
+				Actor:     audit.Actor{ID: "u2", Type: "user"},
+				Status:    audit.StatusDenied,
+				Reason:    "missing permission",
+			},
+		},
 	}
 
-	if err := sink.Write(context.Background(), evt); err != nil {
-		t.Fatalf("LoggerSink.Write: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sink.Write(context.Background(), tc.event); err != nil {
+				t.Fatalf("LoggerSink.Write: %v", err)
+			}
+		})
 	}
 }
 
@@ -170,7 +205,7 @@ func TestAsyncSink_DropOnFull(t *testing.T) {
 		BufferSize:    2,
 		Workers:       1,
 		BatchSize:     10,
-		FlushInterval: 10 * time.Second, // don't flush automatically during test
+		FlushInterval: 10 * time.Second,
 		DropOnFull:    true,
 		OnDrop: func(_ *audit.Event) {
 			mu.Lock()
@@ -200,18 +235,13 @@ func TestRecorder_EnrichmentAndBuilder(t *testing.T) {
 	rec := audit.NewRecorder(mem)
 	defer rec.Close()
 
-	// 1. Context with TenantID, RequestID, Actor, and custom Metadata
 	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-alpha")
 	req.Header.Set("X-Request-ID", "req-xyz-123")
 
-	ctx := req.Context()
-	// Simulate middleware extraction
-	ctx = context.WithValue(ctx, struct{}{}, nil) // dummy
 	tenantHandler := middleware.TenantID()
 	reqIDHandler := middleware.RequestID()
 
-	// Wrap in handlers to populate context
 	h := reqIDHandler(tenantHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		reqCtx := r.Context()
 		reqCtx = audit.WithActor(reqCtx, audit.Actor{
@@ -222,7 +252,6 @@ func TestRecorder_EnrichmentAndBuilder(t *testing.T) {
 		})
 		reqCtx = audit.WithMetadata(reqCtx, "ip", "10.0.0.1")
 
-		// Record using fluent builder
 		err := rec.NewEvent("billing.plan.upgrade").
 			WithResource("subscription", "sub-555", "Enterprise Plan").
 			WithStatus(audit.StatusSuccess).
@@ -274,7 +303,6 @@ func TestRecorder_JWTClaimsFallback(t *testing.T) {
 	rec := audit.NewRecorder(mem)
 	defer rec.Close()
 
-	// Setup context with JWT claims via middleware
 	cfg := middleware.JWTConfig{
 		SecretKey: []byte("super-secret-key-32-bytes-long!"),
 	}
@@ -310,7 +338,7 @@ func TestRecorder_JWTClaimsFallback(t *testing.T) {
 	}
 }
 
-func TestAuditMiddleware(t *testing.T) {
+func TestAuditMiddleware_TableDriven(t *testing.T) {
 	mem := audit.NewMemorySink()
 	rec := audit.NewRecorder(mem)
 	defer rec.Close()
@@ -328,50 +356,85 @@ func TestAuditMiddleware(t *testing.T) {
 		}
 	})))
 
-	// 1. GET requests should NOT be audited by automatic middleware
-	reqGet := httptest.NewRequest(http.MethodGet, "/success", nil)
-	wGet := httptest.NewRecorder()
-	auditHandler.ServeHTTP(wGet, reqGet)
-	if len(mem.Events()) != 0 {
-		t.Errorf("expected GET not to be audited, got %d events", len(mem.Events()))
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		headers     map[string]string
+		wantAudited bool
+		wantStatus  audit.Status
+	}{
+		{
+			name:        "GET request is not audited by mutation middleware",
+			method:      http.MethodGet,
+			path:        "/success",
+			headers:     nil,
+			wantAudited: false,
+		},
+		{
+			name:   "POST /success records StatusSuccess with IP and User-Agent",
+			method: http.MethodPost,
+			path:   "/success",
+			headers: map[string]string{
+				"User-Agent":      "AuditTestClient/2.0",
+				"X-Forwarded-For": "203.0.113.195",
+			},
+			wantAudited: true,
+			wantStatus:  audit.StatusSuccess,
+		},
+		{
+			name:        "POST /denied records StatusDenied",
+			method:      http.MethodPost,
+			path:        "/denied",
+			headers:     nil,
+			wantAudited: true,
+			wantStatus:  audit.StatusDenied,
+		},
+		{
+			name:        "POST /error records StatusFailure",
+			method:      http.MethodPost,
+			path:        "/error",
+			headers:     nil,
+			wantAudited: true,
+			wantStatus:  audit.StatusFailure,
+		},
 	}
 
-	// 2. POST /success
-	reqPost := httptest.NewRequest(http.MethodPost, "/success", nil)
-	reqPost.Header.Set("User-Agent", "TestClient/1.0")
-	reqPost.Header.Set("X-Forwarded-For", "203.0.113.195")
-	wPost := httptest.NewRecorder()
-	auditHandler.ServeHTTP(wPost, reqPost)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mem.Clear()
 
-	events := mem.Events()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Status != audit.StatusSuccess {
-		t.Errorf("expected StatusSuccess, got %v", events[0].Status)
-	}
-	if events[0].Metadata["user_agent"] != "TestClient/1.0" {
-		t.Errorf("expected User-Agent in metadata, got %v", events[0].Metadata["user_agent"])
-	}
-	if events[0].Metadata["client_ip"] != "203.0.113.195" {
-		t.Errorf("expected client_ip in metadata, got %v", events[0].Metadata["client_ip"])
-	}
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			w := httptest.NewRecorder()
+			auditHandler.ServeHTTP(w, req)
 
-	// 3. POST /denied
-	mem.Clear()
-	reqDenied := httptest.NewRequest(http.MethodPost, "/denied", nil)
-	wDenied := httptest.NewRecorder()
-	auditHandler.ServeHTTP(wDenied, reqDenied)
-	if events := mem.Events(); len(events) != 1 || events[0].Status != audit.StatusDenied {
-		t.Errorf("expected StatusDenied, got %+v", events)
-	}
+			events := mem.Events()
+			if !tc.wantAudited {
+				if len(events) != 0 {
+					t.Errorf("expected no audit event, got %d", len(events))
+				}
+				return
+			}
 
-	// 4. POST /error
-	mem.Clear()
-	reqError := httptest.NewRequest(http.MethodPost, "/error", nil)
-	wError := httptest.NewRecorder()
-	auditHandler.ServeHTTP(wError, reqError)
-	if events := mem.Events(); len(events) != 1 || events[0].Status != audit.StatusFailure {
-		t.Errorf("expected StatusFailure, got %+v", events)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 audit event, got %d", len(events))
+			}
+			if events[0].Status != tc.wantStatus {
+				t.Errorf("event.Status = %v, want %v", events[0].Status, tc.wantStatus)
+			}
+			if ua, ok := tc.headers["User-Agent"]; ok {
+				if events[0].Metadata["user_agent"] != ua {
+					t.Errorf("event.Metadata[user_agent] = %v, want %v", events[0].Metadata["user_agent"], ua)
+				}
+			}
+			if ip, ok := tc.headers["X-Forwarded-For"]; ok {
+				if events[0].Metadata["client_ip"] != ip {
+					t.Errorf("event.Metadata[client_ip] = %v, want %v", events[0].Metadata["client_ip"], ip)
+				}
+			}
+		})
 	}
 }

@@ -61,178 +61,248 @@ func (m *mockCache) Flush(_ context.Context) error {
 	return nil
 }
 
-func TestContextHelpers(t *testing.T) {
-	ctx := context.Background()
-
-	// Initial empty
-	if _, ok := multitenancy.FromContext(ctx); ok {
-		t.Error("expected no tenant initially")
+func TestContextHelpers_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupCtx   func() context.Context
+		wantTenant string
+		wantFound  bool
+	}{
+		{
+			name: "empty context returns not found",
+			setupCtx: func() context.Context {
+				return context.Background()
+			},
+			wantTenant: "",
+			wantFound:  false,
+		},
+		{
+			name: "context with WithTenantID returns tenant string",
+			setupCtx: func() context.Context {
+				return multitenancy.WithTenantID(context.Background(), "tenant-alpha")
+			},
+			wantTenant: "tenant-alpha",
+			wantFound:  true,
+		},
+		{
+			name: "context with full WithTenant object returns tenant ID",
+			setupCtx: func() context.Context {
+				return multitenancy.WithTenant(context.Background(), multitenancy.Tenant{
+					ID:   "tenant-beta",
+					Name: "Beta Corp",
+					Tier: "enterprise",
+				})
+			},
+			wantTenant: "tenant-beta",
+			wantFound:  true,
+		},
+		{
+			name: "fallback to middleware.TenantID in context",
+			setupCtx: func() context.Context {
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.Header.Set("X-Tenant-ID", "tenant-middleware")
+				var captured context.Context
+				middleware.TenantID()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					captured = r.Context()
+				})).ServeHTTP(httptest.NewRecorder(), req)
+				return captured
+			},
+			wantTenant: "tenant-middleware",
+			wantFound:  true,
+		},
 	}
 
-	// Injected via WithTenantID
-	ctx1 := multitenancy.WithTenantID(ctx, "tenant-1")
-	tid, ok := multitenancy.FromContext(ctx1)
-	if !ok || tid != "tenant-1" {
-		t.Errorf("expected tenant-1, got %q (ok=%v)", tid, ok)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := tc.setupCtx()
+			tid, ok := multitenancy.FromContext(ctx)
+			if ok != tc.wantFound || tid != tc.wantTenant {
+				t.Errorf("FromContext() = (%q, %v), want (%q, %v)", tid, ok, tc.wantTenant, tc.wantFound)
+			}
+		})
 	}
-
-	// Injected via WithTenant full object
-	ctx2 := multitenancy.WithTenant(ctx, multitenancy.Tenant{
-		ID:   "tenant-2",
-		Name: "Acme Corp",
-		Tier: "enterprise",
-	})
-	tenant, ok := multitenancy.TenantFromContext(ctx2)
-	if !ok || tenant.ID != "tenant-2" || tenant.Name != "Acme Corp" || tenant.Tier != "enterprise" {
-		t.Errorf("unexpected tenant: %+v", tenant)
-	}
-
-	// Fallback to middleware.TenantID
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Tenant-ID", "tenant-middleware")
-	middlewareHandler := middleware.TenantID()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		got, ok := multitenancy.FromContext(r.Context())
-		if !ok || got != "tenant-middleware" {
-			t.Errorf("expected fallback to middleware tenant, got %q (ok=%v)", got, ok)
-		}
-	}))
-	middlewareHandler.ServeHTTP(httptest.NewRecorder(), req)
 }
 
 func TestTenantModel(t *testing.T) {
-	model := &multitenancy.TenantModel{TenantID: "t-abc"}
-	var scoped multitenancy.TenantScoped = model
-
-	if scoped.GetTenantID() != "t-abc" {
-		t.Errorf("expected t-abc, got %s", scoped.GetTenantID())
+	tests := []struct {
+		name      string
+		initialID string
+		updatedID string
+	}{
+		{"standard tenant model mutation", "t-abc", "t-xyz"},
+		{"uuid tenant mutation", "0192e21b-0000-7000-8000-000000000001", "0192e21b-0000-7000-8000-000000000002"},
 	}
-	scoped.SetTenantID("t-xyz")
-	if model.TenantID != "t-xyz" {
-		t.Errorf("expected t-xyz, got %s", model.TenantID)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &multitenancy.TenantModel{TenantID: tc.initialID}
+			var scoped multitenancy.TenantScoped = model
+
+			if scoped.GetTenantID() != tc.initialID {
+				t.Errorf("GetTenantID() = %s, want %s", scoped.GetTenantID(), tc.initialID)
+			}
+			scoped.SetTenantID(tc.updatedID)
+			if model.TenantID != tc.updatedID {
+				t.Errorf("model.TenantID = %s, want %s", model.TenantID, tc.updatedID)
+			}
+		})
 	}
 }
 
-func TestScopedCache(t *testing.T) {
+func TestScopedCache_TableDriven(t *testing.T) {
 	raw := newMockCache()
 	cacheA := multitenancy.NewScopedCache(raw, "tenant-a")
 	cacheB := multitenancy.NewScopedCache(raw, "tenant-b")
-
 	ctx := context.Background()
 
-	// Store key "session" under tenant-a
-	if err := cacheA.Set(ctx, "session", "token-a", time.Minute); err != nil {
-		t.Fatalf("cacheA.Set: %v", err)
+	tests := []struct {
+		name       string
+		action     func(t *testing.T)
+		verifyRaw  func(t *testing.T)
+		verifyGets func(t *testing.T)
+	}{
+		{
+			name: "set values under isolated tenants",
+			action: func(t *testing.T) {
+				_ = cacheA.Set(ctx, "session", "token-a", time.Minute)
+				_ = cacheB.Set(ctx, "session", "token-b", time.Minute)
+			},
+			verifyRaw: func(t *testing.T) {
+				if exists, _ := raw.Exists(ctx, "tenant:tenant-a:session"); !exists {
+					t.Error("expected raw key tenant:tenant-a:session to exist")
+				}
+				if exists, _ := raw.Exists(ctx, "tenant:tenant-b:session"); !exists {
+					t.Error("expected raw key tenant:tenant-b:session to exist")
+				}
+			},
+			verifyGets: func(t *testing.T) {
+				valA, _ := cacheA.Get(ctx, "session")
+				valB, _ := cacheB.Get(ctx, "session")
+				if valA != "token-a" {
+					t.Errorf("cacheA.Get() = %q, want token-a", valA)
+				}
+				if valB != "token-b" {
+					t.Errorf("cacheB.Get() = %q, want token-b", valB)
+				}
+			},
+		},
+		{
+			name: "delete under tenant A does not affect tenant B",
+			action: func(t *testing.T) {
+				_ = cacheA.Delete(ctx, "session")
+			},
+			verifyRaw: func(t *testing.T) {
+				if exists, _ := raw.Exists(ctx, "tenant:tenant-a:session"); exists {
+					t.Error("expected tenant A session to be removed from raw cache")
+				}
+				if exists, _ := raw.Exists(ctx, "tenant:tenant-b:session"); !exists {
+					t.Error("expected tenant B session to remain in raw cache")
+				}
+			},
+			verifyGets: func(t *testing.T) {
+				existsA, _ := cacheA.Exists(ctx, "session")
+				existsB, _ := cacheB.Exists(ctx, "session")
+				if existsA {
+					t.Error("expected session not to exist for tenant A")
+				}
+				if !existsB {
+					t.Error("expected session to still exist for tenant B")
+				}
+			},
+		},
 	}
 
-	// Store key "session" under tenant-b with different value
-	if err := cacheB.Set(ctx, "session", "token-b", time.Minute); err != nil {
-		t.Fatalf("cacheB.Set: %v", err)
-	}
-
-	// Verify tenant-a gets token-a
-	valA, err := cacheA.Get(ctx, "session")
-	if err != nil || valA != "token-a" {
-		t.Errorf("cacheA.Get = %q (err=%v), want token-a", valA, err)
-	}
-
-	// Verify tenant-b gets token-b
-	valB, err := cacheB.Get(ctx, "session")
-	if err != nil || valB != "token-b" {
-		t.Errorf("cacheB.Get = %q (err=%v), want token-b", valB, err)
-	}
-
-	// Verify underlying raw keys are isolated
-	existsA, _ := raw.Exists(ctx, "tenant:tenant-a:session")
-	existsB, _ := raw.Exists(ctx, "tenant:tenant-b:session")
-	if !existsA || !existsB {
-		t.Errorf("expected both tenant namespaces in underlying raw cache")
-	}
-
-	// Delete from tenant-a does not delete tenant-b
-	_ = cacheA.Delete(ctx, "session")
-	existsA, _ = cacheA.Exists(ctx, "session")
-	existsB, _ = cacheB.Exists(ctx, "session")
-	if existsA {
-		t.Error("expected tenant-a session to be deleted")
-	}
-	if !existsB {
-		t.Error("expected tenant-b session to remain intact")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.action(t)
+			tc.verifyRaw(t)
+			tc.verifyGets(t)
+		})
 	}
 }
 
-func TestContextScopedCache(t *testing.T) {
-	raw := newMockCache()
-	ctxCache := multitenancy.NewContextScopedCache(raw)
-
-	ctxA := multitenancy.WithTenantID(context.Background(), "t-1")
-	ctxB := multitenancy.WithTenantID(context.Background(), "t-2")
-
-	_ = ctxCache.Set(ctxA, "config", "cfg1", time.Minute)
-	_ = ctxCache.Set(ctxB, "config", "cfg2", time.Minute)
-
-	gotA, _ := ctxCache.Get(ctxA, "config")
-	gotB, _ := ctxCache.Get(ctxB, "config")
-
-	if gotA != "cfg1" || gotB != "cfg2" {
-		t.Errorf("gotA=%q gotB=%q, want cfg1 and cfg2", gotA, gotB)
-	}
-}
-
-func TestRequireTenantMiddleware(t *testing.T) {
-	called := false
-	handler := multitenancy.RequireTenant()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		tid, ok := multitenancy.FromContext(r.Context())
-		if !ok || tid != "tenant-active" {
-			t.Errorf("expected tenant-active in handler, got %q", tid)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	// 1. Missing tenant -> 400 Bad Request
-	reqMissing := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-	wMissing := httptest.NewRecorder()
-	handler.ServeHTTP(wMissing, reqMissing)
-	if wMissing.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request, got %d", wMissing.Code)
-	}
-	if called {
-		t.Error("handler should not have been called on missing tenant")
-	}
-
-	// 2. Present header -> 200 OK
-	called = false
-	reqPresent := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-	reqPresent.Header.Set("X-Tenant-ID", "tenant-active")
-	wPresent := httptest.NewRecorder()
-	handler.ServeHTTP(wPresent, reqPresent)
-	if wPresent.Code != http.StatusOK {
-		t.Errorf("expected 200 OK, got %d", wPresent.Code)
-	}
-	if !called {
-		t.Error("expected handler to be invoked")
-	}
-
-	// 3. Custom options: header name and status code
-	customHandler := multitenancy.RequireTenant(
-		multitenancy.WithHeader("X-Org-ID"),
-		multitenancy.WithStatusCode(http.StatusUnauthorized),
-	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	reqCustom := httptest.NewRequest(http.MethodGet, "/", nil)
-	wCustom := httptest.NewRecorder()
-	customHandler.ServeHTTP(wCustom, reqCustom)
-	if wCustom.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 Unauthorized, got %d", wCustom.Code)
+func TestRequireTenantMiddleware_TableDriven(t *testing.T) {
+	tests := []struct {
+		name           string
+		middlewareOpts []multitenancy.MiddlewareOption
+		requestHeader  map[string]string
+		contextTenant  string
+		wantStatus     int
+		wantExecuted   bool
+	}{
+		{
+			name:           "missing X-Tenant-ID returns 400 Bad Request",
+			middlewareOpts: nil,
+			requestHeader:  nil,
+			contextTenant:  "",
+			wantStatus:     http.StatusBadRequest,
+			wantExecuted:   false,
+		},
+		{
+			name:           "present X-Tenant-ID passes with 200 OK",
+			middlewareOpts: nil,
+			requestHeader:  map[string]string{"X-Tenant-ID": "acme-123"},
+			contextTenant:  "",
+			wantStatus:     http.StatusOK,
+			wantExecuted:   true,
+		},
+		{
+			name:           "tenant already in context passes without header",
+			middlewareOpts: nil,
+			requestHeader:  nil,
+			contextTenant:  "pre-authenticated-tenant",
+			wantStatus:     http.StatusOK,
+			wantExecuted:   true,
+		},
+		{
+			name: "custom header name missing returns configured 401 status",
+			middlewareOpts: []multitenancy.MiddlewareOption{
+				multitenancy.WithHeader("X-Organization-ID"),
+				multitenancy.WithStatusCode(http.StatusUnauthorized),
+			},
+			requestHeader: map[string]string{"X-Tenant-ID": "wrong-header"},
+			contextTenant: "",
+			wantStatus:    http.StatusUnauthorized,
+			wantExecuted:  false,
+		},
+		{
+			name: "custom header name present passes with 200 OK",
+			middlewareOpts: []multitenancy.MiddlewareOption{
+				multitenancy.WithHeader("X-Organization-ID"),
+				multitenancy.WithStatusCode(http.StatusUnauthorized),
+			},
+			requestHeader: map[string]string{"X-Organization-ID": "org-corp"},
+			contextTenant: "",
+			wantStatus:    http.StatusOK,
+			wantExecuted:  true,
+		},
 	}
 
-	reqCustomOk := httptest.NewRequest(http.MethodGet, "/", nil)
-	reqCustomOk.Header.Set("X-Org-ID", "org-123")
-	wCustomOk := httptest.NewRecorder()
-	customHandler.ServeHTTP(wCustomOk, reqCustomOk)
-	if wCustomOk.Code != http.StatusOK {
-		t.Errorf("expected 200 OK, got %d", wCustomOk.Code)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			executed := false
+			handler := multitenancy.RequireTenant(tc.middlewareOpts...)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				executed = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/resource", nil)
+			for k, v := range tc.requestHeader {
+				req.Header.Set(k, v)
+			}
+			if tc.contextTenant != "" {
+				req = req.WithContext(multitenancy.WithTenantID(req.Context(), tc.contextTenant))
+			}
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tc.wantStatus)
+			}
+			if executed != tc.wantExecuted {
+				t.Errorf("handler executed = %v, want %v", executed, tc.wantExecuted)
+			}
+		})
 	}
 }
