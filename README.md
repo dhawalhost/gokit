@@ -48,6 +48,8 @@
 | `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
 | `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
 | `multitenancy` | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
+| `authz` | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
+| `crypto/kms` | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
@@ -480,19 +482,66 @@ scopedCache := multitenancy.NewContextScopedCache(redisCache)
 scopedCache.Set(ctx, "session:1", userData, time.Hour) // isolated per tenant
 ```
 
+### `authz`
+
+Fine-grained Role-Based (RBAC) and Attribute-Based (ABAC) authorization enforcer with wildcard matching:
+
+```go
+import "github.com/dhawalhost/gokit/authz"
+
+// 1. Configure role-to-permission mappings
+roles := authz.NewRoleMap(map[string][]string{
+    "admin":   {"*"},
+    "finance": {"invoices:*", "reports:read"},
+    "viewer":  {"*:read"},
+})
+enforcer := authz.NewEnforcer(authz.WithRoleMap(roles))
+
+// 2. Protect routes with Chi middleware
+r.With(authz.Require(enforcer, "invoices:create")).Post("/invoices", createInvoiceHandler)
+r.With(authz.RequireRole(enforcer, "admin")).Delete("/invoices/{id}", deleteInvoiceHandler)
+
+// 3. Programmatic checks
+if err := enforcer.Enforce(ctx, "invoices:refund"); err != nil {
+    // ErrForbidden or ErrUnauthorized
+}
+```
+
+### `crypto/kms`
+
+Envelope encryption pattern protecting sensitive data at rest using unique, ephemeral Data Encryption Keys (DEKs):
+
+```go
+import "github.com/dhawalhost/gokit/crypto/kms"
+
+// 1. Configure KeyProvider (Local AES-256 for dev/self-hosted; AWS/GCP KMS/Vault in production)
+provider, _ := kms.NewLocalKeyProvider(map[string][]byte{
+    "primary-2026": masterKey32Bytes,
+}, "primary-2026")
+cipher := kms.NewEnvelopeCipher(provider)
+
+// 2. Encrypt sensitive field with Additional Authenticated Data (AAD)
+aad := []byte("tenant:acme_corp")
+b64Envelope, err := cipher.EncryptString(ctx, "primary-2026", "secret-credit-card-number", aad)
+
+// 3. Decrypt back to plaintext
+cardNum, err := cipher.DecryptString(ctx, b64Envelope, aad)
+```
+
 ---
 
 ## 📚 Examples & Documentation
 
 ### Comprehensive Examples
 
-The `examples/` directory contains 5 complete, production-ready applications:
+The `examples/` directory contains 6 complete, production-ready applications:
 
 1. **[basic-server](examples/README.md#1-basic-server)**: Minimal HTTP server with health checks and metrics
 2. **[database-crud](examples/README.md#2-database-crud)**: RESTful API with PostgreSQL, GORM, and pagination
 3. **[auth-jwt](examples/README.md#3-jwt-authentication)**: JWT authentication with protected routes
 4. **[cache-ratelimit](examples/README.md#4-cache--rate-limiting)**: Redis caching and IP-based rate limiting
 5. **[circuit-breaker](examples/README.md#5-circuit-breaker)**: Fault-tolerant external service calls
+6. **[enterprise-service](examples/README.md#6-enterprise-microservice-enterprise-service)**: Multi-tenancy, outbox transactions, audit logging, KMS envelope encryption, and RBAC authorization
 
 See [examples/README.md](examples/README.md) for detailed usage instructions and testing commands.
 

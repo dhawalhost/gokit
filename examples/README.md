@@ -114,6 +114,21 @@ done
 curl http://localhost:8080/api/v1/status
 ```
 
+### 6. Enterprise Microservice (`enterprise-service/`)
+A unified enterprise architecture demonstrating:
+- Multi-tenancy enforcement (`multitenancy.RequireTenant()`)
+- Role & Permission authorization (`authz.Require()`)
+- KMS Envelope Encryption with AES-256-GCM and per-record DEKs
+- Distributed locking (`distlock.WithLock()`)
+- Transactional Outbox pattern with background relay dispatcher (`outbox.Relay`)
+- Compliance audit logging with PII auto-masking (`audit.AsyncSink`)
+
+**Run:**
+```bash
+cd examples/enterprise-service
+go run main.go
+```
+
 ## Configuration
 
 All examples support configuration via environment variables with the `APP_` prefix:
