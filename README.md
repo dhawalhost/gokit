@@ -48,6 +48,11 @@
 | `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
 | `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
 | `eventbus` | Resilient Pub/Sub event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
+| `jobqueue` | Asynchronous background task runner with priority scheduling, worker pools, delayed jobs, and retry backoff |
+| `featureflag` | OpenFeature-compatible feature flag engine with deterministic canary rollouts and contextual targeting |
+| `webhook` | Inbound HMAC-SHA256 signature verification & outbound resilient webhook dispatcher with retries |
+| `saga` | Distributed transaction orchestrator with forward step execution and automated reverse compensations |
+| `bulkhead` | Semaphore-based concurrency limiter & tenant resource fair-sharing isolating downstream dependencies |
 | `multitenancy` | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
 | `authz` | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
 | `crypto/kms` | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
@@ -673,6 +678,128 @@ b64Envelope, err := cipher.EncryptString(ctx, "primary-2026", "secret-credit-car
 
 // 3. Decrypt back to plaintext
 cardNum, err := cipher.DecryptString(ctx, b64Envelope, aad)
+```
+
+### `jobqueue`
+
+Asynchronous background task runner with priority tiers, worker pools, delayed scheduling, and exponential retries:
+
+```go
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/jobqueue"
+)
+
+// 1. Initialize MemoryQueue or RedisQueue
+q := jobqueue.NewMemoryQueue(jobqueue.QueueConfig{Workers: 4})
+defer q.Stop()
+
+// 2. Register job handler
+q.RegisterHandler("email:send", func(ctx context.Context, job *jobqueue.Job) error {
+    var email EmailPayload
+    _ = job.Unmarshal(&email)
+    return sendEmail(ctx, email)
+})
+
+_ = q.Start(ctx)
+
+// 3. Enqueue immediate high-priority job or delayed job
+job, _ := jobqueue.NewJSONJob("email:send", EmailPayload{To: "user@example.com"})
+_ = q.Enqueue(ctx, job.WithPriority(jobqueue.PriorityHigh))
+_ = q.EnqueueIn(ctx, job, 10*time.Minute) // delayed execution
+```
+
+### `featureflag`
+
+OpenFeature-compatible feature flag evaluation engine with percentage canary rollouts and contextual attribute targeting:
+
+```go
+import (
+    "context"
+
+    "github.com/dhawalhost/gokit/featureflag"
+)
+
+flag := featureflag.Flag{
+    Key:              "beta-dashboard",
+    Enabled:          true,
+    DefaultVariation: "false",
+    Variations:       map[string]any{"true": true, "false": false},
+    Rules: []featureflag.Rule{
+        {Attribute: "tier", Operator: featureflag.OpEquals, Values: []string{"enterprise"}, Variation: "true"},
+    },
+    Rollout: &featureflag.RolloutStrategy{Percentage: 25.0}, // 25% canary
+}
+
+client := featureflag.NewClient(flag)
+userCtx := featureflag.NewContext("usr-101").WithAttribute("tier", "enterprise")
+isEnabled := client.BooleanValue(ctx, "beta-dashboard", false, userCtx)
+```
+
+### `webhook`
+
+Inbound HMAC-SHA256 signature verification with timestamp replay attack protection, and outbound resilient webhook dispatcher:
+
+```go
+import (
+    "time"
+
+    "github.com/dhawalhost/gokit/webhook"
+)
+
+// 1. Inbound verification middleware (5m tolerance window)
+r.With(webhook.InboundMiddleware(secretKey, 5*time.Minute)).
+    Post("/api/v1/webhooks/stripe", stripeWebhookHandler)
+
+// 2. Outbound resilient dispatcher with retries and signature calculation
+dispatcher := webhook.NewDispatcher(webhook.DispatcherConfig{Timeout: 5 * time.Second})
+res, err := dispatcher.Dispatch(ctx, "https://customer.endpoint/webhook", payloadBytes, secretKey)
+```
+
+### `saga`
+
+Distributed transaction orchestrator with forward step sequencing and automated reverse compensations on failure:
+
+```go
+import (
+    "context"
+
+    "github.com/dhawalhost/gokit/saga"
+)
+
+s := saga.New("order-checkout")
+
+// Step 1: Reserve Inventory
+s.AddStep(saga.NewStep("reserve-inventory", reserveInvFunc, releaseInvCompensateFunc))
+
+// Step 2: Charge Payment (if this fails, Step 1 is automatically compensated)
+s.AddStep(saga.NewStep("charge-payment", chargeCardFunc, refundCardCompensateFunc))
+
+result, err := s.Execute(ctx)
+if err != nil {
+    fmt.Printf("Saga failed at %s, state: %s\n", result.FailedStep, result.State)
+}
+```
+
+### `bulkhead`
+
+Semaphore-based concurrency limiter and partitioned tenant resource fair-sharing isolating downstream dependencies:
+
+```go
+import (
+    "net/http"
+
+    "github.com/dhawalhost/gokit/bulkhead"
+)
+
+// Partitioned concurrency limit: at most 10 concurrent requests per tenant
+pb := bulkhead.NewPartitionedBulkhead(bulkhead.Config{MaxConcurrent: 10})
+
+r.Use(bulkhead.Middleware(pb, func(r *http.Request) string {
+    return r.Header.Get("X-Tenant-ID")
+}))
 ```
 
 ### `testutil`

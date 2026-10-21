@@ -63,3 +63,74 @@ func TestRollbackMigrationBadDSN(t *testing.T) {
 		})
 	}
 }
+
+func TestReplicaRouter(t *testing.T) {
+	t.Run("nil primary returns error", func(t *testing.T) {
+		_, err := database.NewReplicaRouter(nil)
+		if err == nil {
+			t.Fatalf("expected error for nil primary, got nil")
+		}
+	})
+
+	t.Run("write always returns primary", func(t *testing.T) {
+		primary := &database.DB{}
+		router, err := database.NewReplicaRouter(primary)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if router.Write() != primary {
+			t.Errorf("expected write to return primary")
+		}
+	})
+
+	t.Run("read without replicas returns primary", func(t *testing.T) {
+		primary := &database.DB{}
+		router, err := database.NewReplicaRouter(primary)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if router.Read(context.Background()) != primary {
+			t.Errorf("expected read without replicas to return primary")
+		}
+	})
+
+	t.Run("read round-robins across replicas", func(t *testing.T) {
+		primary := &database.DB{}
+		r1 := &database.DB{}
+		r2 := &database.DB{}
+
+		router, err := database.NewReplicaRouter(primary, r1, r2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ctx := context.Background()
+		first := router.Read(ctx)
+		second := router.Read(ctx)
+		third := router.Read(ctx)
+
+		if first != r1 || second != r2 || third != r1 {
+			t.Errorf("expected round robin r1 -> r2 -> r1, got %v -> %v -> %v", first, second, third)
+		}
+	})
+
+	t.Run("WithPrimary context forces primary read", func(t *testing.T) {
+		primary := &database.DB{}
+		r1 := &database.DB{}
+
+		router, err := database.NewReplicaRouter(primary, r1)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ctx := database.WithPrimary(context.Background())
+		if !database.IsPrimaryForced(ctx) {
+			t.Errorf("expected IsPrimaryForced to be true")
+		}
+
+		got := router.Read(ctx)
+		if got != primary {
+			t.Errorf("expected primary read when WithPrimary is set, got replica")
+		}
+	})
+}

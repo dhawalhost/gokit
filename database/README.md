@@ -56,3 +56,29 @@ func main() {
     _ = database.RunMigrations(ctx, db.Config.DSN, "file://migrations")
 }
 ```
+
+---
+
+## Read/Write Splitting & Replica Routing
+
+For read-heavy database architectures (e.g. AWS Aurora, Cloud SQL, RDS), `ReplicaRouter` routes mutations to the Primary instance and load-balances read queries across Read Replicas:
+
+```go
+// 1. Initialize ReplicaRouter
+router, err := database.NewReplicaRouter(primaryDB, replicaDB1, replicaDB2)
+if err != nil {
+    panic(err)
+}
+defer router.Close()
+
+// 2. Writes always go to Primary
+_ = router.Write().GORM.Create(&newOrder)
+
+// 3. Reads automatically round-robin across replicas
+var orders []Order
+_ = router.GORM(ctx).Find(&orders)
+
+// 4. Force read from Primary to bypass replication lag (read-after-write consistency)
+ctx = database.WithPrimary(ctx)
+_ = router.GORM(ctx).Find(&orders) // Guarantees read hits Primary
+```

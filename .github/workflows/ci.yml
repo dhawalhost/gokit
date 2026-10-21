@@ -48,15 +48,19 @@ jobs:
             ./audit/... \
             ./authz/... \
             ./bloomfilter/... \
+            ./bulkhead/... \
             ./circuitbreaker/... \
             ./client/... \
             ./config/... \
             ./crypto/... \
             ./distlock/... \
             ./errors/... \
+            ./eventbus/... \
+            ./featureflag/... \
             ./health/... \
             ./idempotency/... \
             ./idgen/... \
+            ./jobqueue/... \
             ./logger/... \
             ./middleware/... \
             ./multitenancy/... \
@@ -66,9 +70,11 @@ jobs:
             ./ratelimit/... \
             ./response/... \
             ./router/... \
+            ./saga/... \
             ./server/... \
             ./testutil/... \
-            ./validator/...
+            ./validator/... \
+            ./webhook/...
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4

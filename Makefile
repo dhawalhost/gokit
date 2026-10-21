@@ -4,6 +4,7 @@
 test:
 	go test \
 		./bloomfilter/... \
+		./bulkhead/... \
 		./circuitbreaker/... \
 		./client/... \
 		./config/... \
@@ -11,9 +12,11 @@ test:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./featureflag/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
+		./jobqueue/... \
 		./logger/... \
 		./middleware/... \
 		./observability/... \
@@ -21,14 +24,17 @@ test:
 		./ratelimit/... \
 		./response/... \
 		./router/... \
+		./saga/... \
 		./server/... \
 		./testutil/... \
-		./validator/...
+		./validator/... \
+		./webhook/...
 
 # Run tests with the race detector.
 test-race:
 	go test -race \
 		./bloomfilter/... \
+		./bulkhead/... \
 		./circuitbreaker/... \
 		./client/... \
 		./config/... \
@@ -36,9 +42,11 @@ test-race:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./featureflag/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
+		./jobqueue/... \
 		./logger/... \
 		./middleware/... \
 		./observability/... \
@@ -46,14 +54,17 @@ test-race:
 		./ratelimit/... \
 		./response/... \
 		./router/... \
+		./saga/... \
 		./server/... \
 		./testutil/... \
-		./validator/...
+		./validator/... \
+		./webhook/...
 
 # Generate coverage report (opens in browser via 'go tool cover -html').
 cover:
 	go test -coverprofile=coverage.out -covermode=atomic \
 		./bloomfilter/... \
+		./bulkhead/... \
 		./circuitbreaker/... \
 		./client/... \
 		./config/... \
@@ -61,9 +72,11 @@ cover:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./featureflag/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
+		./jobqueue/... \
 		./logger/... \
 		./middleware/... \
 		./observability/... \
@@ -71,9 +84,11 @@ cover:
 		./ratelimit/... \
 		./response/... \
 		./router/... \
+		./saga/... \
 		./server/... \
 		./testutil/... \
-		./validator/...
+		./validator/... \
+		./webhook/...
 	go tool cover -html=coverage.out
 
 lint:
