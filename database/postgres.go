@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/dhawalhost/gokit/config"
@@ -41,10 +42,24 @@ import (
 //   - Use a map or switch statement to validate input
 //   - Never allow arbitrary user input as table/column names
 func New(ctx context.Context, cfg config.DatabaseConfig) (*DB, error) {
-	// Open raw pgxpool.
-	pool, err := pgxpool.New(ctx, cfg.DSN)
+	// Configure and open raw pgxpool.
+	poolConfig, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("database: pgxpool.New: %w", err)
+		return nil, fmt.Errorf("database: parse pgxpool config: %w", err)
+	}
+	if cfg.MaxOpenConns > 0 && cfg.MaxOpenConns <= math.MaxInt32 {
+		poolConfig.MaxConns = int32(cfg.MaxOpenConns)
+	}
+	if cfg.MaxIdleConns > 0 && cfg.MaxIdleConns <= math.MaxInt32 {
+		poolConfig.MinConns = int32(cfg.MaxIdleConns)
+	}
+	if cfg.ConnMaxLifetime > 0 {
+		poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("database: pgxpool.NewWithConfig: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()

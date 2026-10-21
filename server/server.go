@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
@@ -68,6 +69,9 @@ func (s *HTTPServer) Run(ctx context.Context) error {
 		ReadTimeout:       s.readTimeout,
 		WriteTimeout:      s.writeTimeout,
 		IdleTimeout:       s.idleTimeout,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 	}
 
 	errCh := make(chan error, 1)
@@ -95,8 +99,15 @@ func (s *HTTPServer) Run(ctx context.Context) error {
 }
 
 // Shutdown gracefully shuts down the server with the configured timeout.
+// If the incoming ctx is already cancelled, a fresh context with shutdownTimeout
+// is used to ensure in-flight connections have time to complete.
 func (s *HTTPServer) Shutdown(ctx context.Context) error {
-	shutdownCtx, cancel := context.WithTimeout(ctx, s.shutdownTimeout)
+	baseCtx := context.Background()
+	if ctx != nil && ctx.Err() == nil {
+		baseCtx = ctx
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(baseCtx, s.shutdownTimeout)
 	defer cancel()
 
 	if s.srv == nil {
