@@ -21,12 +21,12 @@ func APIKey(cfg APIKeyConfig) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get(cfg.Header)
 			if key == "" {
-				http.Error(w, `{"code":"UNAUTHORIZED","message":"missing api key"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, `{"code":"UNAUTHORIZED","message":"missing api key"}`)
 				return
 			}
 			ok, err := cfg.Validate(key)
 			if err != nil || !ok {
-				http.Error(w, `{"code":"UNAUTHORIZED","message":"invalid api key"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, `{"code":"UNAUTHORIZED","message":"invalid api key"}`)
 				return
 			}
 			next.ServeHTTP(w, r)

@@ -22,21 +22,25 @@ func NewRedisStore(client *redis.Client, windowDuration time.Duration) *RedisSto
 
 // slidingWindowScript implements a sliding-window counter using sorted sets.
 // KEYS[1]: the sorted set key
-// ARGV[1]: current timestamp in milliseconds
+// ARGV[1]: current timestamp in milliseconds (score, used for window eviction)
 // ARGV[2]: window start (current - windowMs)
 // ARGV[3]: max requests (burst)
-// ARGV[4]: window duration in milliseconds (for key expiry).
+// ARGV[4]: window duration in milliseconds (for key expiry)
+// ARGV[5]: unique member (nanosecond timestamp - ensures distinct entries even
+//
+//	within the same millisecond)
 const slidingWindowScript = `
 local key    = KEYS[1]
 local now    = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
 local limit  = tonumber(ARGV[3])
 local expiry = tonumber(ARGV[4])
+local member = ARGV[5]
 
 redis.call("ZREMRANGEBYSCORE", key, "-inf", window)
 local count = redis.call("ZCARD", key)
 if count < limit then
-  redis.call("ZADD", key, now, now)
+  redis.call("ZADD", key, now, member)
   redis.call("PEXPIRE", key, expiry)
   return 1
 end
@@ -46,11 +50,12 @@ return 0
 // Allow reports whether the request should be permitted under the sliding window.
 func (s *RedisStore) Allow(ctx context.Context, key string, _ float64, burst int) (bool, error) {
 	nowMs := time.Now().UnixMilli()
+	nowNs := time.Now().UnixNano() // unique member to avoid collisions within the same ms
 	windowMs := nowMs - s.windowDuration.Milliseconds()
 
 	result, err := s.client.Eval(ctx, slidingWindowScript,
 		[]string{fmt.Sprintf("rl:%s", key)},
-		nowMs, windowMs, burst, s.windowDuration.Milliseconds(),
+		nowMs, windowMs, burst, s.windowDuration.Milliseconds(), fmt.Sprintf("%d", nowNs),
 	).Int()
 	if err != nil {
 		return false, fmt.Errorf("ratelimit: redis eval: %w", err)

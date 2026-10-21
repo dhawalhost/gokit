@@ -58,6 +58,16 @@ func TestHMACSHA256(t *testing.T) {
 	if mac1 != mac2 {
 		t.Error("HMAC should be deterministic")
 	}
+	if !crypto.VerifyHMACSHA256([]byte("data"), key, mac1) {
+		t.Error("VerifyHMACSHA256 failed for valid MAC")
+	}
+	if crypto.VerifyHMACSHA256([]byte("tampered-data"), key, mac1) {
+		t.Error("VerifyHMACSHA256 succeeded for tampered data")
+	}
+	if crypto.VerifyHMACSHA256([]byte("data"), key, "invalid-hex") {
+		t.Error("VerifyHMACSHA256 succeeded for invalid hex")
+	}
+
 	mac3 := crypto.HMACSHA256([]byte("other"), key)
 	if mac1 == mac3 {
 		t.Error("HMAC should differ for different data")

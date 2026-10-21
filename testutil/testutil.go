@@ -23,7 +23,7 @@ func NewTestRecorder() *httptest.ResponseRecorder {
 
 // NewTestRequest creates an *http.Request for testing. If body is non-nil it is
 // JSON-encoded and the Content-Type header is set to application/json.
-func NewTestRequest(method, path string, body interface{}) *http.Request {
+func NewTestRequest(method, path string, body any) *http.Request {
 	var req *http.Request
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -37,7 +37,7 @@ func NewTestRequest(method, path string, body interface{}) *http.Request {
 
 // AssertJSONResponse asserts that rec has the given status code and, if dst is
 // non-nil, decodes the body into dst.
-func AssertJSONResponse(t *testing.T, rec *httptest.ResponseRecorder, status int, dst interface{}) {
+func AssertJSONResponse(t *testing.T, rec *httptest.ResponseRecorder, status int, dst any) {
 	t.Helper()
 	if rec.Code != status {
 		t.Errorf("expected status %d, got %d; body: %s", status, rec.Code, rec.Body.String())
@@ -56,7 +56,7 @@ func AssertErrorResponse(t *testing.T, rec *httptest.ResponseRecorder, status in
 	if rec.Code != status {
 		t.Errorf("expected status %d, got %d; body: %s", status, rec.Code, rec.Body.String())
 	}
-	var payload map[string]interface{}
+	var payload map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Errorf("failed to decode error body: %v", err)
 		return

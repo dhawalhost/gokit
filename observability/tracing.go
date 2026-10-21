@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dhawalhost/gokit/config"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	"github.com/dhawalhost/gokit/config"
 )
 
 // InitTracer sets up an OTLP HTTP trace exporter and installs a global TracerProvider.

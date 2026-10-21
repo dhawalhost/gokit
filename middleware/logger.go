@@ -8,17 +8,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// statusRecorder wraps ResponseWriter to capture the written status code.
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
-}
-
 // Logger returns a middleware that logs each request using the provided zap.Logger.
 // Requests to paths beginning with /health are skipped.
 func Logger(log *zap.Logger) func(http.Handler) http.Handler {
@@ -30,13 +19,13 @@ func Logger(log *zap.Logger) func(http.Handler) http.Handler {
 				return
 			}
 
-			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			rec := &StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 			start := time.Now()
 			next.ServeHTTP(rec, r)
 			log.Info("request",
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
-				zap.Int("status", rec.status),
+				zap.Int("status", rec.Status),
 				zap.Duration("latency", time.Since(start)),
 				zap.String("request_id", RequestIDFromContext(r.Context())),
 				zap.String("remote_addr", r.RemoteAddr),

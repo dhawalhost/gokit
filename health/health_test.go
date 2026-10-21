@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/dhawalhost/gokit/health"
 )
@@ -75,6 +76,19 @@ func TestReadyHandlerNoCheckers(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "/health/ready", nil)
 	h.ReadyHandler().ServeHTTP(w, r)
 
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestNewHandlerWithTimeouts(t *testing.T) {
+	h := health.NewHandlerWithTimeouts(2*time.Second, 5*time.Second)
+	if h == nil {
+		t.Fatal("expected non-nil handler")
+	}
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/health/live", nil)
+	h.LiveHandler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}

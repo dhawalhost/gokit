@@ -106,3 +106,28 @@ func TestAssertErrorResponse_WrongCode(t *testing.T) {
 		t.Error("AssertErrorResponse should fail for wrong error code")
 	}
 }
+
+func TestAssertErrorResponse_InvalidJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.WriteHeader(http.StatusBadRequest)
+	_, _ = rec.Write([]byte(`not-json`))
+
+	inner := &testing.T{}
+	testutil.AssertErrorResponse(inner, rec, http.StatusBadRequest, "ANY_CODE")
+	if !inner.Failed() {
+		t.Error("expected failure when response body is invalid JSON")
+	}
+}
+
+func TestAssertJSONResponse_InvalidJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.WriteHeader(http.StatusOK)
+	_, _ = rec.Write([]byte(`not-json`))
+
+	inner := &testing.T{}
+	var dst map[string]string
+	testutil.AssertJSONResponse(inner, rec, http.StatusOK, &dst)
+	if !inner.Failed() {
+		t.Error("expected failure for invalid JSON in AssertJSONResponse")
+	}
+}

@@ -45,3 +45,23 @@ func HMACSHA256(data, key []byte) string {
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// VerifyHMACSHA256 verifies that expectedMACHex matches HMAC-SHA256(data, key)
+// using constant-time comparison to prevent timing attacks.
+func VerifyHMACSHA256(data, key []byte, expectedMACHex string) bool {
+	actualHex := HMACSHA256(data, key)
+	expectedBytes, err := hex.DecodeString(expectedMACHex)
+	if err != nil {
+		return false
+	}
+	actualBytes, err := hex.DecodeString(actualHex)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(actualBytes, expectedBytes)
+}
+
+// EqualHMAC performs a constant-time comparison of two MAC byte slices.
+func EqualHMAC(mac1, mac2 []byte) bool {
+	return hmac.Equal(mac1, mac2)
+}

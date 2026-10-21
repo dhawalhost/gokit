@@ -2,7 +2,8 @@ package middleware
 
 import "net/http"
 
-// SecureHeaders returns a middleware that adds common security-related HTTP headers.
+// SecureHeaders returns a middleware that adds common security-related HTTP headers
+// conforming to modern web security standards (OWASP Secure Headers).
 func SecureHeaders() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -13,6 +14,7 @@ func SecureHeaders() func(http.Handler) http.Handler {
 			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 			h.Set("Content-Security-Policy", "default-src 'self'")
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 			next.ServeHTTP(w, r)
 		})
 	}
