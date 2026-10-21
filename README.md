@@ -47,6 +47,7 @@
 | `distlock` | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
 | `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
 | `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
+| `eventbus` | Resilient Pub/Sub event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
 | `multitenancy` | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
 | `authz` | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
 | `crypto/kms` | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
@@ -120,41 +121,138 @@ func main() {
 
 ## Package Usage Examples
 
-### `logger`
+### `server`
+
+Production HTTP server wrapping `net/http` with Chi router mounting, configurable timeouts, optional TLS, and signal-driven graceful shutdown:
 
 ```go
-log, err := logger.New("info", false)
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/server"
+)
+
+srv := server.New(
+    server.WithAddr(":8080"),
+    server.WithReadTimeout(15 * time.Second),
+    server.WithWriteTimeout(15 * time.Second),
+    server.WithIdleTimeout(60 * time.Second),
+    server.WithShutdownTimeout(10 * time.Second),
+    // server.WithTLS("cert.pem", "key.pem"), // optional TLS
+)
+
+// Mount Chi router or http.Handler
+srv.Mount("/", router)
+
+// Run blocks until SIGINT/SIGTERM is caught, then drains in-flight requests
+if err := srv.Run(context.Background()); err != nil {
+    log.Fatalf("server terminated: %v", err)
+}
+```
+
+### `router`
+
+Chi-based HTTP multiplexer constructors and route grouping helpers:
+
+```go
+import (
+    "net/http"
+
+    "github.com/dhawalhost/gokit/middleware"
+    "github.com/dhawalhost/gokit/router"
+    "github.com/go-chi/chi/v5"
+)
+
+// Pre-load router with global middleware stack
+r := router.NewWithMiddleware(
+    middleware.RequestID(),
+    middleware.Logger(log),
+    middleware.Recovery(log),
+)
+
+// Nested route groups with URL path variables
+r.Route("/api/v1/users", func(r chi.Router) {
+    r.Get("/", listUsersHandler)
+    r.Post("/", createUserHandler)
+    r.Get("/{id}", getUserHandler)
+})
+```
+
+### `logger`
+
+Zap-backed structured JSON logger with automatic sensitive field redaction (`password`, `token`, `secret`, `authorization` masked as `********`):
+
+```go
+import (
+    "github.com/dhawalhost/gokit/logger"
+    "go.uber.org/zap"
+)
+
+log, err := logger.New("info", false) // level, development
 logger.SetGlobal(log)
 
-// Store/retrieve from context
+// Structured key-value logging
+log.Info("user authenticated", zap.String("user_id", "usr-123"), zap.String("tenant_id", "t-1"))
+
+// Context correlation helpers
 ctx = logger.WithContext(ctx, log)
 l := logger.FromContext(ctx)
 ```
 
 ### `config`
 
+Viper-backed configuration loader with environment variable overrides (`APP_*`), YAML support, and automatic credential masking (`config.Secret`):
+
 ```go
-cfg, err := config.Load("config.yaml") // or "" for env-only
-cfg := config.MustLoad("")
+import "github.com/dhawalhost/gokit/config"
+
+// Loads from config.yaml or environment variables (APP_SERVER_ADDR, etc.)
+cfg, err := config.Load("config.yaml") 
+cfg := config.MustLoad("") // Panics on validation error, env-only
+
+// Sensitive credentials use config.Secret to prevent leakage in logs/JSON
+fmt.Println(cfg.Database.Password) // Prints: [REDACTED]
 ```
 
 ### `errors`
 
-```go
-err := errors.NotFound("USER_NOT_FOUND", "user does not exist")
-err = errors.WithDetails(err, map[string]string{"id": userID})
+Standardized application error type with domain error codes, HTTP status mapping, and stack encapsulation:
 
-// In handler
+```go
+import "github.com/dhawalhost/gokit/errors"
+
+// Common domain error constructors
+err := errors.NotFound("USER_NOT_FOUND", "user with the given ID does not exist")
+err = errors.BadRequest("INVALID_ARGUMENT", "email format is invalid")
+err = errors.Unauthorized("INVALID_TOKEN", "session has expired")
+err = errors.Forbidden("ACCESS_DENIED", "insufficient role permissions")
+
+// Attach contextual metadata details
+err = errors.WithDetails(err, map[string]string{"user_id": userID, "field": "email"})
+
+// Write structured JSON error response directly to http.ResponseWriter
 errors.WriteError(w, r, err)
 ```
 
 ### `response`
 
+Generic HTTP response envelopes for standard data, empty responses, and paginated datasets:
+
 ```go
+import "github.com/dhawalhost/gokit/response"
+
+// Standard 200 OK with {"data": ...}
 response.Ok(w, r, user)
-response.Created(w, r, user)
+
+// Standard 201 Created
+response.Created(w, r, createdInvoice)
+
+// Standard 204 No Content
 response.NoContent(w)
-response.Paginated(w, r, users, pagination)
+
+// Paginated response with data list and pagination metadata
+response.Paginated(w, r, users, paginationMeta)
 ```
 
 ### `middleware`
@@ -459,6 +557,55 @@ relay.Start(ctx)
 defer relay.Stop()
 ```
 
+### `eventbus`
+
+Decoupled Publish/Subscribe event bus with in-memory wildcard routing, Redis Streams consumer groups, resilient middlewares, and transactional outbox adapter:
+
+```go
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/eventbus"
+)
+
+// 1. In-Memory EventBus with topic pattern matching (*, #, >)
+memBus := eventbus.NewMemoryBus(eventbus.MemoryBusConfig{BufferSize: 100})
+defer memBus.Close()
+
+// Subscribe with wildcards (* matches single token, # matches multiple)
+sub, _ := memBus.Subscribe(ctx, "orders.*", func(ctx context.Context, msg *eventbus.Message) error {
+    var order OrderPayload
+    _ = msg.Unmarshal(&order)
+    fmt.Printf("Received %s (key: %s)\n", order.ID, msg.Key)
+    return nil
+}, eventbus.WithConcurrency(4))
+defer sub.Unsubscribe()
+
+// Publish event
+msg, _ := eventbus.NewJSONMessage("orders.created", OrderPayload{ID: "ORD-1"})
+_ = memBus.Publish(ctx, msg.WithKey("tenant-1"))
+
+// 2. Distributed Redis Streams with Consumer Groups (competing consumers across pods)
+redisBus, _ := eventbus.NewRedisBus(eventbus.RedisBusConfig{
+    Client:       redisClient, // redis.UniversalClient
+    StreamPrefix: "events:",
+    DefaultGroup: "order-workers",
+})
+defer redisBus.Close()
+
+// 3. Composable Middleware Pipeline (Panic Recovery -> Tracing -> DLQ -> Retry)
+resilientHandler := eventbus.Chain(
+    eventbus.RecoveryMiddleware(),
+    eventbus.TracingMiddleware(nil),
+    eventbus.DeadLetterMiddleware(memBus, "dead-letters"),
+    eventbus.RetryMiddleware(3, 50*time.Millisecond),
+)(myHandler)
+
+// 4. Transactional Outbox Adapter (routes outbox relay directly to eventbus)
+outboxPublisher := eventbus.NewOutboxPublisher(redisBus)
+```
+
 ### `multitenancy`
 
 Tenant data isolation across databases (Postgres RLS session variables & GORM scopes) and Redis caches:
@@ -526,6 +673,37 @@ b64Envelope, err := cipher.EncryptString(ctx, "primary-2026", "secret-credit-car
 
 // 3. Decrypt back to plaintext
 cardNum, err := cipher.DecryptString(ctx, b64Envelope, aad)
+```
+
+### `testutil`
+
+Unit testing utilities for HTTP handlers, JSON assertions, mock loggers, and synthetic requests:
+
+```go
+import (
+    "net/http"
+    "testing"
+
+    "github.com/dhawalhost/gokit/testutil"
+)
+
+func TestCreateUserHandler(t *testing.T) {
+    payload := map[string]string{"name": "Alice", "email": "alice@example.com"}
+    
+    // Create synthetic JSON request and response recorder
+    req := testutil.NewTestRequest(http.MethodPost, "/users", payload)
+    rec := testutil.NewTestRecorder()
+
+    // Execute handler
+    userHandler(rec, req)
+
+    // Assert status code and unmarshal response JSON into target struct
+    var resp UserResponse
+    testutil.AssertJSONResponse(t, rec, http.StatusCreated, &resp)
+
+    // Assert domain error codes on error paths
+    // testutil.AssertErrorResponse(t, rec, http.StatusNotFound, "USER_NOT_FOUND")
+}
 ```
 
 ---

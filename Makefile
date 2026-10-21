@@ -10,6 +10,7 @@ test:
 		./crypto/... \
 		./distlock/... \
 		./errors/... \
+		./eventbus/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
@@ -34,6 +35,7 @@ test-race:
 		./crypto/... \
 		./distlock/... \
 		./errors/... \
+		./eventbus/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
@@ -58,6 +60,7 @@ cover:
 		./crypto/... \
 		./distlock/... \
 		./errors/... \
+		./eventbus/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
