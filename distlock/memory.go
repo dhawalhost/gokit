@@ -15,14 +15,16 @@ type memoryLockEntry struct {
 
 // InMemoryLocker provides an in-memory Locker implementation for unit testing and local development.
 type InMemoryLocker struct {
-	mu    sync.Mutex
-	locks map[string]memoryLockEntry
+	mu            sync.Mutex
+	locks         map[string]memoryLockEntry
+	fencingTokens map[string]int64
 }
 
 // NewInMemoryLocker creates a new thread-safe InMemoryLocker.
 func NewInMemoryLocker() *InMemoryLocker {
 	return &InMemoryLocker{
-		locks: make(map[string]memoryLockEntry),
+		locks:         make(map[string]memoryLockEntry),
+		fencingTokens: make(map[string]int64),
 	}
 }
 
@@ -50,8 +52,8 @@ func (m *InMemoryLocker) Obtain(ctx context.Context, key string, ttl time.Durati
 			return nil, ctx.Err()
 		}
 
-		if m.tryAcquire(key, options.Token, ttl) {
-			base := NewBaseLock(key, options.Token, ttl)
+		if ok, fToken := m.tryAcquire(key, options.Token, ttl); ok {
+			base := NewBaseLock(key, options.Token, ttl, fToken)
 			lock := &MemoryLock{
 				BaseLock: base,
 				locker:   m,
@@ -77,7 +79,7 @@ func (m *InMemoryLocker) Obtain(ctx context.Context, key string, ttl time.Durati
 	return nil, ErrLockHeld
 }
 
-func (m *InMemoryLocker) tryAcquire(key, token string, ttl time.Duration) bool {
+func (m *InMemoryLocker) tryAcquire(key, token string, ttl time.Duration) (bool, int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -86,14 +88,15 @@ func (m *InMemoryLocker) tryAcquire(key, token string, ttl time.Duration) bool {
 
 	// If entry exists and has not expired, it cannot be acquired
 	if exists && entry.expiresAt.After(now) {
-		return false
+		return false, 0
 	}
 
 	m.locks[key] = memoryLockEntry{
 		token:     token,
 		expiresAt: now.Add(ttl),
 	}
-	return true
+	m.fencingTokens[key]++
+	return true, m.fencingTokens[key]
 }
 
 // Unlock releases the in-memory lock if token matches.

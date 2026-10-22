@@ -125,4 +125,9 @@ func TestLogger_AutomaticMasking_TableDriven(t *testing.T) {
 			l.Info("user login", tc.fields...)
 		})
 	}
+
+	t.Run("logger.With child logger with sensitive keys", func(t *testing.T) {
+		child := l.With(zap.String("token", "my-secret-token"), zap.String("module", "auth"))
+		child.Info("child log message", zap.String("password", "p@ssword"))
+	})
 }

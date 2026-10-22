@@ -93,7 +93,8 @@ func (r *RedisLocker) Obtain(ctx context.Context, key string, ttl time.Duration,
 		}).Err()
 
 		if setErr == nil {
-			base := NewBaseLock(key, options.Token, ttl)
+			fencingToken, _ := r.client.Incr(ctx, r.keyPrefix+key+":fencing_token").Result()
+			base := NewBaseLock(key, options.Token, ttl, fencingToken)
 			lock := &RedisLock{
 				BaseLock: base,
 				client:   r.client,

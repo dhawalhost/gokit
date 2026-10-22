@@ -38,6 +38,14 @@ type Lock interface {
 	Extend(ctx context.Context, ttl time.Duration) error
 }
 
+// FencedLock represents an acquired lock that also exposes a monotonically increasing fencing token.
+// Downstream state stores check this token to reject stale writes from paused leaders.
+type FencedLock interface {
+	Lock
+	// FencingToken returns a monotonically increasing epoch for the locked key.
+	FencingToken() int64
+}
+
 // Locker defines the interface for creating and managing distributed locks.
 type Locker interface {
 	// Obtain attempts to acquire a lock for key with the given TTL and options.
@@ -89,25 +97,36 @@ func WithAutoRenew(interval time.Duration) Option {
 
 // BaseLock provides common lock functionality including auto-renewal lifecycle.
 type BaseLock struct {
-	key        string
-	token      string
-	ttl        time.Duration
-	renewStop  chan struct{}
-	renewDone  chan struct{}
-	renewMu    sync.Mutex
-	isRenewing bool
+	key          string
+	token        string
+	ttl          time.Duration
+	fencingToken int64
+	renewStop    chan struct{}
+	renewDone    chan struct{}
+	renewMu      sync.Mutex
+	isRenewing   bool
 }
 
-// NewBaseLock initializes a BaseLock.
-func NewBaseLock(key, token string, ttl time.Duration) *BaseLock {
+// NewBaseLock initializes a BaseLock with an optional fencing token.
+func NewBaseLock(key, token string, ttl time.Duration, fencingToken ...int64) *BaseLock {
 	if token == "" {
 		token = uuid.New().String()
 	}
-	return &BaseLock{
-		key:   key,
-		token: token,
-		ttl:   ttl,
+	var fToken int64
+	if len(fencingToken) > 0 {
+		fToken = fencingToken[0]
 	}
+	return &BaseLock{
+		key:          key,
+		token:        token,
+		ttl:          ttl,
+		fencingToken: fToken,
+	}
+}
+
+// FencingToken returns the monotonic fencing token epoch.
+func (l *BaseLock) FencingToken() int64 {
+	return l.fencingToken
 }
 
 // Key returns the locked resource key.

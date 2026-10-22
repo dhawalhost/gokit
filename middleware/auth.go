@@ -68,8 +68,12 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 	}
 }
 
+// WithClaims stores claims in context for testing or downstream propagation.
+func WithClaims(ctx context.Context, claims jwt.MapClaims) context.Context {
+	return context.WithValue(ctx, defaultClaimsContextKey{}, claims)
+}
+
 // ClaimsFromContext retrieves JWT claims stored by the JWT middleware.
-// It checks both default context key and the canonical "claims" key.
 func ClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
 	if claims, ok := ctx.Value(defaultClaimsContextKey{}).(jwt.MapClaims); ok {
 		return claims, true

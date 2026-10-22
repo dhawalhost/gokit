@@ -8,6 +8,7 @@ import (
 
 	"github.com/dhawalhost/gokit/config"
 	"github.com/dhawalhost/gokit/observability"
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -65,6 +66,24 @@ func TestObservability_Metrics_TableDriven(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "Metrics middleware extracts Chi RoutePattern",
+			run: func(t *testing.T) {
+				observability.InitMetrics("testchi")
+				r := chi.NewRouter()
+				r.Use(observability.Metrics())
+				r.Get("/users/{id}", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				})
+
+				w := httptest.NewRecorder()
+				req, _ := http.NewRequest(http.MethodGet, "/users/123", nil)
+				r.ServeHTTP(w, req)
+				if w.Code != http.StatusOK {
+					t.Errorf("expected 200, got %d", w.Code)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -112,5 +131,18 @@ func TestObservability_Tracing_TableDriven(t *testing.T) {
 	}
 	if err := shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
+	}
+
+	// Test InitTracer enabled
+	shutdownEnabled, err := observability.InitTracer(context.Background(), config.TelemetryConfig{
+		Enabled:      true,
+		ServiceName:  "test-obs-svc",
+		OTLPEndpoint: "localhost:4318",
+	})
+	if err != nil {
+		t.Fatalf("InitTracer enabled: %v", err)
+	}
+	if err := shutdownEnabled(context.Background()); err != nil {
+		t.Fatalf("shutdownEnabled: %v", err)
 	}
 }

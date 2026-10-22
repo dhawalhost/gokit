@@ -19,6 +19,11 @@ func TenantID() func(http.Handler) http.Handler {
 	}
 }
 
+// WithTenantID sets the tenant ID on the context.
+func WithTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, tenantIDContextKey{}, tenantID)
+}
+
 // TenantIDFromContext retrieves the tenant ID stored by the TenantID middleware.
 func TenantIDFromContext(ctx context.Context) (string, bool) {
 	tid, ok := ctx.Value(tenantIDContextKey{}).(string)

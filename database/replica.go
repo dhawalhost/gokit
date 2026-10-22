@@ -3,7 +3,10 @@ package database
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -99,4 +102,81 @@ func (r *ReplicaRouter) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// ReadYourWritesTracker tracks recent write operations per client/session
+// to ensure subsequent reads within the replication lag window route to Primary.
+type ReadYourWritesTracker struct {
+	mu     sync.RWMutex
+	pinned map[string]time.Time
+}
+
+// NewReadYourWritesTracker creates a tracker for causal read-your-writes consistency.
+func NewReadYourWritesTracker() *ReadYourWritesTracker {
+	return &ReadYourWritesTracker{
+		pinned: make(map[string]time.Time),
+	}
+}
+
+// Pin marks a client key (e.g. user ID or session ID) to route all queries to Primary for window duration.
+func (t *ReadYourWritesTracker) Pin(key string, window time.Duration) {
+	if key == "" {
+		return
+	}
+	t.mu.Lock()
+	t.pinned[key] = time.Now().Add(window)
+	t.mu.Unlock()
+}
+
+// IsPinned reports whether the client key is currently within a pinned primary routing window.
+func (t *ReadYourWritesTracker) IsPinned(key string) bool {
+	if key == "" {
+		return false
+	}
+	t.mu.RLock()
+	expiry, exists := t.pinned[key]
+	t.mu.RUnlock()
+
+	if !exists {
+		return false
+	}
+	if time.Now().Before(expiry) {
+		return true
+	}
+
+	t.mu.Lock()
+	delete(t.pinned, key)
+	t.mu.Unlock()
+	return false
+}
+
+// ReadYourWritesMiddleware returns an HTTP middleware that automatically enforces
+// read-your-writes consistency by routing subsequent reads to the primary database
+// within window after any mutating HTTP request (POST, PUT, PATCH, DELETE).
+func ReadYourWritesMiddleware(tracker *ReadYourWritesTracker, keyExtractor func(r *http.Request) string, window time.Duration) func(http.Handler) http.Handler {
+	if window <= 0 {
+		window = 5 * time.Second
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := ""
+			if keyExtractor != nil {
+				key = keyExtractor(r)
+			}
+
+			// Check if client is pinned or explicitly requested primary via header
+			if (key != "" && tracker.IsPinned(key)) || r.Header.Get("X-Force-Primary") == "true" {
+				r = r.WithContext(WithPrimary(r.Context()))
+			}
+
+			isMutation := r.Method == http.MethodPost || r.Method == http.MethodPut ||
+				r.Method == http.MethodPatch || r.Method == http.MethodDelete
+
+			next.ServeHTTP(w, r)
+
+			if isMutation && key != "" {
+				tracker.Pin(key, window)
+			}
+		})
+	}
 }

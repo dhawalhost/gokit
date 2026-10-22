@@ -127,3 +127,39 @@ func TestHMACSHA256_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestEqualHMAC_TableDriven(t *testing.T) {
+	tests := []struct {
+		name     string
+		mac1     []byte
+		mac2     []byte
+		expected bool
+	}{
+		{
+			name:     "matching MACs return true",
+			mac1:     []byte("hash1234567890"),
+			mac2:     []byte("hash1234567890"),
+			expected: true,
+		},
+		{
+			name:     "different MACs return false",
+			mac1:     []byte("hash1234567890"),
+			mac2:     []byte("hash9876543210"),
+			expected: false,
+		},
+		{
+			name:     "different length MACs return false",
+			mac1:     []byte("short"),
+			mac2:     []byte("much-longer-mac"),
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := crypto.EqualHMAC(tc.mac1, tc.mac2); got != tc.expected {
+				t.Errorf("EqualHMAC = %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}

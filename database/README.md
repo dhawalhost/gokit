@@ -82,3 +82,38 @@ _ = router.GORM(ctx).Find(&orders)
 ctx = database.WithPrimary(ctx)
 _ = router.GORM(ctx).Find(&orders) // Guarantees read hits Primary
 ```
+
+---
+
+## 🛡️ Causal "Read-Your-Writes" Consistency Middleware
+
+When users mutate data (e.g. creating a post or updating profile), asynchronous replication lag often causes subsequent page refreshes to hit a replica that hasn't caught up yet, resulting in "ghost" data loss.
+
+`ReadYourWritesMiddleware` automatically pins any mutating user session to the Primary database for the replication lag duration (e.g. 5 seconds):
+
+```go
+tracker := database.NewReadYourWritesTracker()
+
+// Key extractor pulls the authenticated user ID or session token
+userExtractor := func(r *http.Request) string {
+    return r.Header.Get("X-User-ID")
+}
+
+// 5-second primary stickiness window after any POST/PUT/PATCH/DELETE
+rywMiddleware := database.ReadYourWritesMiddleware(tracker, userExtractor, 5*time.Second)
+
+r := chi.NewRouter()
+r.Use(rywMiddleware)
+
+r.Post("/posts", func(w http.ResponseWriter, r *http.Request) {
+    // 1. Mutation: Writes to Primary; user_123 is now pinned for 5 seconds
+    _ = router.Write().GORM.Create(&newPost)
+})
+
+r.Get("/posts", func(w http.ResponseWriter, r *http.Request) {
+    // 2. Query: If called within 5 seconds by user_123, router.GORM(r.Context())
+    // automatically routes to Primary! All other users continue to hit Read Replicas.
+    var posts []Post
+    _ = router.GORM(r.Context()).Find(&posts)
+})
+```

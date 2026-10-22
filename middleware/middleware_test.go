@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
 
+	"github.com/dhawalhost/gokit/idempotency"
 	"github.com/dhawalhost/gokit/middleware"
 	"github.com/dhawalhost/gokit/ratelimit"
 )
@@ -601,6 +602,213 @@ func TestTimeout_TableDriven(t *testing.T) {
 			}
 			if tc.verify != nil {
 				tc.verify(t, w)
+			}
+		})
+	}
+}
+
+func TestCacheControl_TableDriven(t *testing.T) {
+	tests := []struct {
+		name             string
+		cfg              middleware.CacheControlConfig
+		authHeader       string
+		cookieHeader     string
+		wantCacheControl string
+		wantVary         string
+	}{
+		{
+			name: "public cache with max-age and stale-while-revalidate",
+			cfg: middleware.CacheControlConfig{
+				Public:               true,
+				MaxAge:               60 * time.Second,
+				StaleWhileRevalidate: 30 * time.Second,
+				Vary:                 []string{"Accept-Encoding"},
+			},
+			wantCacheControl: "public, max-age=60, stale-while-revalidate=30",
+			wantVary:         "Accept-Encoding",
+		},
+		{
+			name: "private no-store when authorization header present on non-public route",
+			cfg: middleware.CacheControlConfig{
+				Public: false,
+				MaxAge: 300 * time.Second,
+			},
+			authHeader:       "Bearer secret_jwt",
+			wantCacheControl: "private, no-store, no-cache, must-revalidate",
+		},
+		{
+			name: "cookie on non-public route prevents CDN cache poisoning",
+			cfg: middleware.CacheControlConfig{
+				Public: false,
+				MaxAge: 300 * time.Second,
+			},
+			cookieHeader:     "session_id=abc",
+			wantCacheControl: "private, no-store, no-cache, must-revalidate",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r, _ := http.NewRequest(http.MethodGet, "/catalog", nil)
+			if tc.authHeader != "" {
+				r.Header.Set("Authorization", tc.authHeader)
+			}
+			if tc.cookieHeader != "" {
+				r.Header.Set("Cookie", tc.cookieHeader)
+			}
+
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware.CacheControl(tc.cfg)(handler).ServeHTTP(w, r)
+
+			if got := w.Header().Get("Cache-Control"); got != tc.wantCacheControl {
+				t.Errorf("expected Cache-Control %q, got %q", tc.wantCacheControl, got)
+			}
+			if tc.wantVary != "" {
+				if got := w.Header().Get("Vary"); got != tc.wantVary {
+					t.Errorf("expected Vary %q, got %q", tc.wantVary, got)
+				}
+			}
+		})
+	}
+}
+
+func TestWithClaimsAndCustomKey_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupCtx   func() context.Context
+		key        string
+		wantClaims jwt.MapClaims
+		wantOK     bool
+	}{
+		{
+			name: "WithClaims default key retrieval",
+			setupCtx: func() context.Context {
+				return middleware.WithClaims(context.Background(), jwt.MapClaims{"user": "alice"})
+			},
+			key:        "",
+			wantClaims: jwt.MapClaims{"user": "alice"},
+			wantOK:     true,
+		},
+		{
+			name: "ClaimsFromContextWithKey hit with custom key",
+			setupCtx: func() context.Context {
+				var capturedCtx context.Context
+				h := middleware.JWT(middleware.JWTConfig{
+					SecretKey:  []byte("test_secret"),
+					ContextKey: "custom_claims",
+				})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					capturedCtx = r.Context()
+				}))
+				r, _ := http.NewRequest(http.MethodGet, "/", nil)
+				r.Header.Set("Authorization", "Bearer "+makeHS256Token(t, "test_secret", time.Hour))
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, r)
+				return capturedCtx
+			},
+			key:        "custom_claims",
+			wantClaims: jwt.MapClaims{"sub": "user-1"},
+			wantOK:     true,
+		},
+		{
+			name: "ClaimsFromContextWithKey miss",
+			setupCtx: func() context.Context {
+				return context.Background()
+			},
+			key:        "non_existent",
+			wantClaims: nil,
+			wantOK:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := tc.setupCtx()
+			if tc.key == "" {
+				claims, ok := middleware.ClaimsFromContext(ctx)
+				if ok != tc.wantOK {
+					t.Fatalf("expected ok=%v, got %v", tc.wantOK, ok)
+				}
+				if tc.wantOK && claims["user"] != tc.wantClaims["user"] {
+					t.Errorf("expected user=%v, got %v", tc.wantClaims["user"], claims["user"])
+				}
+			} else {
+				claims, ok := middleware.ClaimsFromContextWithKey(ctx, tc.key)
+				if ok != tc.wantOK {
+					t.Fatalf("expected ok=%v, got %v", tc.wantOK, ok)
+				}
+				if tc.wantOK && claims["sub"] != tc.wantClaims["sub"] {
+					t.Errorf("expected sub=%v, got %v", tc.wantClaims["sub"], claims["sub"])
+				}
+			}
+		})
+	}
+}
+
+func TestWithTenantID_TableDriven(t *testing.T) {
+	tests := []struct {
+		name     string
+		tenantID string
+		wantOK   bool
+	}{
+		{
+			name:     "valid tenant ID set on context",
+			tenantID: "tenant-999",
+			wantOK:   true,
+		},
+		{
+			name:     "empty tenant ID returns ok=false",
+			tenantID: "",
+			wantOK:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := middleware.WithTenantID(context.Background(), tc.tenantID)
+			got, ok := middleware.TenantIDFromContext(ctx)
+			if ok != tc.wantOK {
+				t.Fatalf("expected ok=%v, got %v", tc.wantOK, ok)
+			}
+			if tc.wantOK && got != tc.tenantID {
+				t.Errorf("expected tenant %q, got %q", tc.tenantID, got)
+			}
+		})
+	}
+}
+
+func TestIdempotencyMiddleware_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		key        string
+		wantStatus int
+	}{
+		{
+			name:       "valid idempotency key stores and returns 200",
+			key:        "req-idemp-1",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := idempotency.NewInMemoryStore()
+			cfg := middleware.IdempotencyConfig{Store: store}
+			mw := middleware.Idempotency(cfg)
+			h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ok"))
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.Header.Set("Idempotency-Key", tc.key)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
 			}
 		})
 	}

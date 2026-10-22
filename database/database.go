@@ -19,14 +19,24 @@ type DB struct {
 
 // Close closes both the GORM underlying sql.DB and the pgxpool.
 func (db *DB) Close() error {
-	sqlDB, err := db.GORM.DB()
-	if err != nil {
-		return fmt.Errorf("database: get sql.DB: %w", err)
+	if db == nil {
+		return nil
 	}
-	if err := sqlDB.Close(); err != nil {
-		return fmt.Errorf("database: close sql.DB: %w", err)
+	if db.GORM == nil && db.Pool == nil {
+		return fmt.Errorf("database: uninitialized database handle")
 	}
-	db.Pool.Close()
+	if db.GORM != nil {
+		sqlDB, err := db.GORM.DB()
+		if err != nil {
+			return fmt.Errorf("database: get sql.DB: %w", err)
+		}
+		if err := sqlDB.Close(); err != nil {
+			return fmt.Errorf("database: close sql.DB: %w", err)
+		}
+	}
+	if db.Pool != nil {
+		db.Pool.Close()
+	}
 	return nil
 }
 

@@ -3,6 +3,7 @@ package idgen_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dhawalhost/gokit/idgen"
 )
@@ -186,6 +187,132 @@ func TestNanoID_TableDriven(t *testing.T) {
 						t.Fatal("duplicate NanoID generated")
 					}
 					ids[id] = struct{}{}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestShardIDGenerator_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "NewShardIDGenerator rejects shard ID above maximum",
+			run: func(t *testing.T) {
+				_, err := idgen.NewShardIDGenerator(8192) // max is 8191 (13 bits)
+				if err == nil {
+					t.Fatal("expected error for shardID exceeding 8191")
+				}
+			},
+		},
+		{
+			name: "NextID generates valid 64-bit ID with correct embedded shard ID",
+			run: func(t *testing.T) {
+				shardID := uint16(480)
+				gen, err := idgen.NewShardIDGenerator(shardID)
+				if err != nil {
+					t.Fatalf("failed to create ShardIDGenerator: %v", err)
+				}
+
+				id, err := gen.NextID()
+				if err != nil {
+					t.Fatalf("NextID error: %v", err)
+				}
+
+				if id <= 0 {
+					t.Fatalf("expected positive int64 ID, got %d", id)
+				}
+
+				extractedShard := idgen.ExtractShardID(id)
+				if extractedShard != shardID {
+					t.Fatalf("expected extracted shard %d, got %d", shardID, extractedShard)
+				}
+			},
+		},
+		{
+			name: "ExtractTime recovers timestamp close to generation time",
+			run: func(t *testing.T) {
+				gen, err := idgen.NewShardIDGenerator(42)
+				if err != nil {
+					t.Fatalf("failed to create ShardIDGenerator: %v", err)
+				}
+
+				id, err := gen.NextID()
+				if err != nil {
+					t.Fatalf("NextID error: %v", err)
+				}
+
+				extractedTime := idgen.ExtractTime(id)
+				if extractedTime.IsZero() {
+					t.Fatal("expected non-zero extracted time")
+				}
+			},
+		},
+		{
+			name: "consecutive IDs are strictly increasing and unique",
+			run: func(t *testing.T) {
+				gen, err := idgen.NewShardIDGenerator(10)
+				if err != nil {
+					t.Fatalf("failed to create ShardIDGenerator: %v", err)
+				}
+
+				seen := make(map[int64]struct{}, 200)
+				var lastID int64
+				for i := 0; i < 200; i++ {
+					id, err := gen.NextID()
+					if err != nil {
+						t.Fatalf("NextID error at step %d: %v", i, err)
+					}
+					if id <= lastID {
+						t.Fatalf("expected monotonic increasing ID, last %d, current %d", lastID, id)
+					}
+					if _, exists := seen[id]; exists {
+						t.Fatalf("duplicate ID generated: %d", id)
+					}
+					seen[id] = struct{}{}
+					lastID = id
+				}
+			},
+		},
+		{
+			name: "clock moving backwards returns error",
+			run: func(t *testing.T) {
+				gen, err := idgen.NewShardIDGenerator(1)
+				if err != nil {
+					t.Fatalf("NewShardIDGenerator: %v", err)
+				}
+				// Set lastTime far in the future
+				gen.SetLastTimeForTest(time.Now().UnixMilli() + 100000)
+
+				_, err = gen.NextID()
+				if err == nil {
+					t.Fatal("expected error when clock moved backwards")
+				}
+			},
+		},
+		{
+			name: "sequence rollover within same millisecond awaits next tick",
+			run: func(t *testing.T) {
+				gen, err := idgen.NewShardIDGenerator(1)
+				if err != nil {
+					t.Fatalf("NewShardIDGenerator: %v", err)
+				}
+				// Set sequence to maxSequence and lastTime to current millisecond
+				gen.SetLastTimeForTest(time.Now().UnixMilli())
+				gen.SetSequenceForTest(4095) // maxSequence
+
+				id, err := gen.NextID()
+				if err != nil {
+					t.Fatalf("NextID error on rollover: %v", err)
+				}
+				if id <= 0 {
+					t.Fatalf("expected valid ID after rollover, got %d", id)
 				}
 			},
 		},

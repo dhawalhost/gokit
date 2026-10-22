@@ -523,4 +523,311 @@ func TestRedisBus(t *testing.T) {
 		}
 		mu.Unlock()
 	})
+
+	t.Run("second subscription with same group handles BUSYGROUP and sub.Topic", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		sub2, err := bus.Subscribe(ctx, "tasks.created", func(_ context.Context, _ *eventbus.Message) error {
+			return nil
+		}, eventbus.WithConsumerGroup("test-workers"), eventbus.WithConsumerName("worker-2"), eventbus.WithConcurrency(2), eventbus.WithAutoAck(true))
+
+		if err != nil {
+			t.Fatalf("expected BUSYGROUP to be handled cleanly, got: %v", err)
+		}
+		defer sub2.Unsubscribe()
+
+		if sub2.Topic() != "tasks.created" {
+			t.Errorf("expected topic tasks.created, got %s", sub2.Topic())
+		}
+	})
+}
+
+func TestSubscribeOptions_TableDriven(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     []eventbus.SubscribeOption
+		validate func(t *testing.T, o *eventbus.SubscribeOptions)
+	}{
+		{
+			name: "custom options configured correctly",
+			opts: []eventbus.SubscribeOption{
+				eventbus.WithConsumerGroup("grp-1"),
+				eventbus.WithConsumerName("worker-alpha"),
+				eventbus.WithAutoAck(true),
+				eventbus.WithConcurrency(4),
+			},
+			validate: func(t *testing.T, o *eventbus.SubscribeOptions) {
+				if o.ConsumerGroup != "grp-1" {
+					t.Errorf("expected grp-1, got %s", o.ConsumerGroup)
+				}
+				if o.ConsumerName != "worker-alpha" {
+					t.Errorf("expected worker-alpha, got %s", o.ConsumerName)
+				}
+				if !o.AutoAck {
+					t.Error("expected AutoAck to be true")
+				}
+				if o.Concurrency != 4 {
+					t.Errorf("expected Concurrency 4, got %d", o.Concurrency)
+				}
+			},
+		},
+		{
+			name: "negative concurrency ignored",
+			opts: []eventbus.SubscribeOption{
+				eventbus.WithConcurrency(-1),
+			},
+			validate: func(t *testing.T, o *eventbus.SubscribeOptions) {
+				if o.Concurrency != 0 {
+					t.Errorf("expected Concurrency 0, got %d", o.Concurrency)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var o eventbus.SubscribeOptions
+			for _, opt := range tc.opts {
+				opt(&o)
+			}
+			tc.validate(t, &o)
+		})
+	}
+}
+
+func TestChainMiddleware_TableDriven(t *testing.T) {
+	tests := []struct {
+		name      string
+		order     []string
+		wantOrder string
+	}{
+		{
+			name:      "chains middlewares in outer-to-inner order",
+			order:     nil,
+			wantOrder: "m1->m2->handler",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var steps []string
+			m1 := func(next eventbus.HandlerFunc) eventbus.HandlerFunc {
+				return func(ctx context.Context, msg *eventbus.Message) error {
+					steps = append(steps, "m1")
+					return next(ctx, msg)
+				}
+			}
+			m2 := func(next eventbus.HandlerFunc) eventbus.HandlerFunc {
+				return func(ctx context.Context, msg *eventbus.Message) error {
+					steps = append(steps, "m2")
+					return next(ctx, msg)
+				}
+			}
+
+			chain := eventbus.Chain(m1, m2)
+			handler := chain(func(_ context.Context, _ *eventbus.Message) error {
+				steps = append(steps, "handler")
+				return nil
+			})
+
+			_ = handler(context.Background(), eventbus.NewMessage("test", nil))
+
+			got := ""
+			for i, s := range steps {
+				if i > 0 {
+					got += "->"
+				}
+				got += s
+			}
+			if got != tc.wantOrder {
+				t.Errorf("expected execution order %q, got %q", tc.wantOrder, got)
+			}
+		})
+	}
+}
+
+func TestHeaderCarrier_TableDriven(t *testing.T) {
+	tests := []struct {
+		name     string
+		initial  eventbus.HeaderCarrier
+		setKey   string
+		setVal   string
+		wantKeys []string
+	}{
+		{
+			name:     "Keys, Get, and Set work correctly",
+			initial:  eventbus.HeaderCarrier{"trace-id": "123", "span-id": "456"},
+			setKey:   "user-id",
+			setVal:   "u-789",
+			wantKeys: []string{"trace-id", "span-id", "user-id"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.initial.Set(tc.setKey, tc.setVal)
+			if got := tc.initial.Get(tc.setKey); got != tc.setVal {
+				t.Errorf("expected %q, got %q", tc.setVal, got)
+			}
+			keys := tc.initial.Keys()
+			if len(keys) != len(tc.wantKeys) {
+				t.Fatalf("expected %d keys, got %d", len(tc.wantKeys), len(keys))
+			}
+		})
+	}
+}
+
+func TestMessage_Unmarshal_TableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		wantErr bool
+	}{
+		{
+			name:    "valid JSON unmarshals successfully",
+			payload: []byte(`{"user":"bob"}`),
+			wantErr: false,
+		},
+		{
+			name:    "empty payload returns error",
+			payload: nil,
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON returns error",
+			payload: []byte(`{invalid`),
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := eventbus.NewMessage("test", tc.payload)
+			var target map[string]string
+			err := msg.Unmarshal(&target)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr=%v, got=%v", tc.wantErr, err)
+			}
+			if !tc.wantErr && target["user"] != "bob" {
+				t.Errorf("expected bob, got %s", target["user"])
+			}
+		})
+	}
+}
+
+func TestEventBus_ClosedAndMessageEdgeCases_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "NewJSONMessage error and WithHeader on nil headers map",
+			run: func(t *testing.T) {
+				// Invalid json payload
+				if _, err := eventbus.NewJSONMessage("topic", make(chan int)); err == nil {
+					t.Error("expected error when marshaling channel")
+				}
+
+				// WithHeader when Headers is nil
+				msg := &eventbus.Message{Topic: "topic"}
+				msg = msg.WithHeader("X-Key", "value")
+				if msg.Headers["X-Key"] != "value" {
+					t.Errorf("expected header X-Key to be value, got %s", msg.Headers["X-Key"])
+				}
+
+				// WithHeaders when Headers is nil
+				msg2 := &eventbus.Message{Topic: "topic"}
+				msg2 = msg2.WithHeaders(map[string]string{"H1": "V1", "H2": "V2"})
+				if msg2.Headers["H1"] != "V1" || msg2.Headers["H2"] != "V2" {
+					t.Errorf("expected headers set, got %+v", msg2.Headers)
+				}
+			},
+		},
+		{
+			name: "MemoryBus error after Close and auto ID generation",
+			run: func(t *testing.T) {
+				bus := eventbus.NewMemoryBus()
+				ctx := context.Background()
+
+				// Nil message error
+				if err := bus.Publish(ctx, nil); err == nil {
+					t.Error("expected error when publishing nil message")
+				}
+
+				// Auto timestamp assignment when Timestamp is zero
+				msg := &eventbus.Message{Topic: "test.topic", Payload: []byte("data")}
+				if err := bus.Publish(ctx, msg); err != nil {
+					t.Fatalf("Publish error: %v", err)
+				}
+				if msg.Timestamp.IsZero() {
+					t.Error("expected Timestamp to be auto-stamped on Publish")
+				}
+
+				// Close bus
+				if err := bus.Close(); err != nil {
+					t.Fatalf("Close error: %v", err)
+				}
+
+				// Publish after Close
+				if err := bus.Publish(ctx, msg); err == nil {
+					t.Error("expected error when publishing on closed MemoryBus")
+				}
+
+				// Subscribe after Close
+				if _, err := bus.Subscribe(ctx, "test.topic", func(_ context.Context, _ *eventbus.Message) error { return nil }); err == nil {
+					t.Error("expected error when subscribing on closed MemoryBus")
+				}
+			},
+		},
+		{
+			name: "RedisBus zero config defaults and closed error",
+			run: func(t *testing.T) {
+				// Nil client returns error
+				if _, err := eventbus.NewRedisBus(eventbus.RedisBusConfig{Client: nil}); err == nil {
+					t.Error("expected error when Client is nil")
+				}
+
+				mr := miniredis.RunT(t)
+				rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+				defer rdb.Close()
+
+				// Tests zero config defaults (BatchSize=10, BlockTimeout=2s, StreamPrefix, DefaultGroup)
+				rb, err := eventbus.NewRedisBus(eventbus.RedisBusConfig{Client: rdb})
+				if err != nil {
+					t.Fatalf("NewRedisBus failed: %v", err)
+				}
+				ctx := context.Background()
+
+				// Nil message error
+				if err := rb.Publish(ctx, nil); err == nil {
+					t.Error("expected error when publishing nil message on RedisBus")
+				}
+
+				// Auto ID assignment
+				msgNoID := &eventbus.Message{Topic: "test.topic", Payload: []byte("foo")}
+				_ = rb.Publish(ctx, msgNoID)
+				if msgNoID.ID == "" {
+					t.Error("expected ID to be assigned on RedisBus Publish")
+				}
+
+				if err := rb.Close(); err != nil {
+					t.Fatalf("Close error: %v", err)
+				}
+
+				msg := eventbus.NewMessage("test.topic", []byte("foo"))
+				if err := rb.Publish(ctx, msg); err == nil {
+					t.Error("expected error when publishing on closed RedisBus")
+				}
+
+				if _, err := rb.Subscribe(ctx, "test.topic", func(_ context.Context, _ *eventbus.Message) error { return nil }); err == nil {
+					t.Error("expected error when subscribing on closed RedisBus")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
 }

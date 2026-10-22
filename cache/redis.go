@@ -12,7 +12,8 @@ import (
 
 // RedisCache is a Cache backed by Redis (supports standalone, cluster, or sentinel).
 type RedisCache struct {
-	client redis.UniversalClient
+	client    redis.UniversalClient
+	coalescer *Coalescer
 }
 
 // NewRedis creates a new RedisCache from the given config.
@@ -62,12 +63,18 @@ func NewRedis(cfg config.RedisConfig) (*RedisCache, error) {
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		return nil, fmt.Errorf("cache: redis ping: %w", err)
 	}
-	return &RedisCache{client: client}, nil
+	return &RedisCache{
+		client:    client,
+		coalescer: NewCoalescer(),
+	}, nil
 }
 
 // NewRedisFromClient creates a RedisCache from an existing redis.UniversalClient.
 func NewRedisFromClient(client redis.UniversalClient) *RedisCache {
-	return &RedisCache{client: client}
+	return &RedisCache{
+		client:    client,
+		coalescer: NewCoalescer(),
+	}
 }
 
 // Client returns the underlying redis.UniversalClient instance.
@@ -158,4 +165,10 @@ func (r *RedisCache) Close() error {
 		return fmt.Errorf("cache: close: %w", err)
 	}
 	return nil
+}
+
+// GetOrSet retrieves a cached value or executes fetch with singleflight deduplication
+// to prevent cache stampedes under high concurrency.
+func (r *RedisCache) GetOrSet(ctx context.Context, key string, ttl time.Duration, fetch FetcherFunc) (string, error) {
+	return r.coalescer.Do(ctx, r, key, ttl, fetch)
 }

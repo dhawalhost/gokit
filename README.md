@@ -18,6 +18,8 @@
 - **Type-safe** — Go generics used in `response` and `pagination` to eliminate type assertions.
 - **Secure by default** — AES-256-GCM, JWT validation, SQL injection prevention, rate limiting, secure headers.
 
+> 📖 **Architecture Guide**: See [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) for the **Senior System Design & Production Architecture Playbook**, mapping bottlenecks (Hot keys, Cache stampedes, Replica lag, Lock contention) directly to `gokit` primitives.
+
 ---
 
 ## Package Overview

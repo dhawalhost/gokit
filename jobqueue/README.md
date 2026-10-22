@@ -112,3 +112,47 @@ _ = q.Start(ctx)
 | `PollInterval` | `time.Duration` | `1s` | Scheduler interval to promote mature delayed jobs |
 | `BaseBackoff` | `time.Duration` | `1s` | Initial retry backoff delay for failed jobs |
 | `MaxBackoff` | `time.Duration` | `1m` | Cap on exponential retry delay |
+
+---
+
+## ⚡ High-Throughput Batcher (`jobqueue.Batcher[T]`)
+
+For high-volume ingest pipelines (10k-200k events/sec), individual I/O calls destroy throughput and saturate disk IOPS. `Batcher[T]` buffers items and flushes them either when a batch size threshold is met or when linger timeout expires.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/dhawalhost/gokit/jobqueue"
+)
+
+type AuditLog struct {
+    TenantID string
+    Event    string
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Amortize I/O: flush every 100 items or 50ms linger
+    batcher := jobqueue.NewBatcher(jobqueue.BatcherConfig[AuditLog]{
+        BatchSize:   100,
+        Linger:      50 * time.Millisecond,
+        BufferSize:  5000,
+        BlockOnFull: true,
+        FlushFunc: func(ctx context.Context, batch []AuditLog) error {
+            // Bulk insert batch into database or Kafka in one round-trip
+            fmt.Printf("Flushed batch of %d audit logs\n", len(batch))
+            return nil
+        },
+    })
+    defer batcher.Close()
+
+    _ = batcher.Push(ctx, AuditLog{TenantID: "tenant-1", Event: "login"})
+}
+```
+

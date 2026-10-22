@@ -3,9 +3,11 @@ package client_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -491,6 +493,346 @@ func TestClient_HeaderPropagation_TableDriven(t *testing.T) {
 
 				if receivedHeader != "gokit-outbound/1.0" {
 					t.Errorf("expected header 'gokit-outbound/1.0', got %q", receivedHeader)
+				}
+			},
+		},
+		{
+			name: "POST with raw reader and content type",
+			run: func(t *testing.T) {
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodPost {
+						t.Errorf("expected POST, got %s", r.Method)
+					}
+					if r.Header.Get("Content-Type") != "text/plain" {
+						t.Errorf("expected text/plain, got %s", r.Header.Get("Content-Type"))
+					}
+					b, _ := io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write([]byte("echo: " + string(b)))
+				}))
+				defer ts.Close()
+
+				c := client.New(
+					client.WithName("test-client"),
+					client.WithTimeout(5*time.Second),
+					client.WithAttemptTimeout(2*time.Second),
+					client.WithTransport(http.DefaultTransport),
+					client.WithLogger(zap.NewNop()),
+				)
+
+				resp, err := c.Post(context.Background(), ts.URL, "text/plain", strings.NewReader("hello post"))
+				if err != nil {
+					t.Fatalf("Post error: %v", err)
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != http.StatusCreated {
+					t.Errorf("expected 201, got %d", resp.StatusCode)
+				}
+				body, _ := io.ReadAll(resp.Body)
+				if string(body) != "echo: hello post" {
+					t.Errorf("expected echo: hello post, got %s", string(body))
+				}
+			},
+		},
+		{
+			name: "Retry-After header with RFC1123 HTTP date",
+			run: func(t *testing.T) {
+				var attempts int
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					attempts++
+					if attempts == 1 {
+						w.Header().Set("Retry-After", time.Now().Add(100*time.Millisecond).UTC().Format(http.TimeFormat))
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer ts.Close()
+
+				c := client.New(
+					client.WithMaxRetries(2),
+					client.WithLogger(zap.NewNop()),
+				)
+
+				resp, err := c.Get(context.Background(), ts.URL)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				defer resp.Body.Close()
+
+				if attempts != 2 {
+					t.Errorf("expected 2 attempts, got %d", attempts)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("expected 200, got %d", resp.StatusCode)
+				}
+			},
+		},
+		{
+			name: "custom RetryCondition and canceled context are respected",
+			run: func(t *testing.T) {
+				customRetried := false
+				c := client.New(
+					client.WithMaxRetries(2),
+					client.WithRetryPolicy(client.RetryPolicy{
+						MaxRetries:     2,
+						InitialBackoff: 10 * time.Millisecond,
+						MaxBackoff:     50 * time.Millisecond,
+						RetryCondition: func(resp *http.Response, err error) bool {
+							customRetried = true
+							return resp != nil && resp.StatusCode == http.StatusTeapot
+						},
+					}),
+					client.WithLogger(zap.NewNop()),
+				)
+
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusTeapot)
+				}))
+				defer ts.Close()
+
+				resp, err := c.Get(context.Background(), ts.URL)
+				if err != nil {
+					t.Fatalf("unexpected err: %v", err)
+				}
+				defer resp.Body.Close()
+
+				if !customRetried {
+					t.Errorf("expected custom RetryCondition to execute")
+				}
+
+				// Already canceled context does not retry
+				canceledCtx, cancel := context.WithCancel(context.Background())
+				cancel()
+				_, err = c.Get(canceledCtx, ts.URL)
+				if err == nil {
+					t.Errorf("expected error with canceled context")
+				}
+			},
+		},
+		{
+			name: "connection refused network error triggers retries",
+			run: func(t *testing.T) {
+				c := client.New(
+					client.WithRetryPolicy(client.RetryPolicy{
+						MaxRetries:     1,
+						InitialBackoff: 5 * time.Millisecond,
+					}),
+					client.WithLogger(zap.NewNop()),
+				)
+				_, err := c.Get(context.Background(), "http://127.0.0.1:59999")
+				if err == nil {
+					t.Fatal("expected error connecting to non-existent port")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read(p []byte) (n int, err error) {
+	return 0, errors.New("read error")
+}
+
+func (errReader) Close() error {
+	return nil
+}
+
+func TestClient_EdgeCases_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "resolveURL errors on invalid base URL and target URL",
+			run: func(t *testing.T) {
+				invalidBaseClient := client.New(
+					client.WithBaseURL("http://\x7f"),
+					client.WithLogger(zap.NewNop()),
+				)
+				ctx := context.Background()
+
+				if _, err := invalidBaseClient.Get(ctx, "/path"); err == nil {
+					t.Error("expected error with invalid base URL on Get")
+				}
+				if _, err := invalidBaseClient.Post(ctx, "/path", "text/plain", nil); err == nil {
+					t.Error("expected error with invalid base URL on Post")
+				}
+				if _, err := invalidBaseClient.Put(ctx, "/path", "text/plain", nil); err == nil {
+					t.Error("expected error with invalid base URL on Put")
+				}
+				if _, err := invalidBaseClient.Delete(ctx, "/path"); err == nil {
+					t.Error("expected error with invalid base URL on Delete")
+				}
+				if _, err := invalidBaseClient.PostJSON(ctx, "/path", nil, nil); err == nil {
+					t.Error("expected error with invalid base URL on PostJSON")
+				}
+
+				validBaseClient := client.New(
+					client.WithBaseURL("http://localhost:8080"),
+					client.WithLogger(zap.NewNop()),
+				)
+				if _, err := validBaseClient.Get(ctx, "http://\x7f"); err == nil {
+					t.Error("expected error with invalid target URL on Get")
+				}
+			},
+		},
+		{
+			name: "PostJSON errors on marshal error and corrupt response decode",
+			run: func(t *testing.T) {
+				c := client.New(client.WithLogger(zap.NewNop()))
+				ctx := context.Background()
+
+				// Marshal error with unmarshallable type (channel)
+				if _, err := c.PostJSON(ctx, "http://localhost", make(chan int), nil); err == nil {
+					t.Error("expected error when marshaling invalid json body")
+				}
+
+				// Corrupt response decoding into target
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{invalid-json-body}"))
+				}))
+				defer ts.Close()
+
+				var target map[string]string
+				resp, err := c.PostJSON(ctx, ts.URL, map[string]string{"foo": "bar"}, &target)
+				if err == nil {
+					t.Error("expected error when unmarshaling corrupt response JSON")
+				}
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+			},
+		},
+		{
+			name: "request body read error fails Do immediately",
+			run: func(t *testing.T) {
+				c := client.New(client.WithLogger(zap.NewNop()))
+				req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://localhost", errReader{})
+				if err != nil {
+					t.Fatalf("NewRequest error: %v", err)
+				}
+				_, err = c.Do(req)
+				if err == nil {
+					t.Error("expected error when reading request body fails")
+				}
+			},
+		},
+		{
+			name: "body replay error when GetBody returns error during retry",
+			run: func(t *testing.T) {
+				var attempts int
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					attempts++
+					w.WriteHeader(http.StatusServiceUnavailable)
+				}))
+				defer ts.Close()
+
+				c := client.New(
+					client.WithRetryPolicy(client.RetryPolicy{
+						MaxRetries:           2,
+						InitialBackoff:       5 * time.Millisecond,
+						RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+					}),
+					client.WithLogger(zap.NewNop()),
+				)
+
+				req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL, strings.NewReader("payload"))
+				if err != nil {
+					t.Fatalf("NewRequest: %v", err)
+				}
+				req.GetBody = func() (io.ReadCloser, error) {
+					return nil, errors.New("cannot create body reader")
+				}
+
+				_, err = c.Do(req)
+				if err == nil {
+					t.Error("expected error when GetBody fails on retry")
+				}
+			},
+		},
+		{
+			name: "Retry-After parsed and capped at MaxBackoff",
+			run: func(t *testing.T) {
+				var attempts int
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					attempts++
+					if attempts == 1 {
+						w.Header().Set("Retry-After", "100") // 100 seconds
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer ts.Close()
+
+				c := client.New(
+					client.WithRetryPolicy(client.RetryPolicy{
+						MaxRetries:           1,
+						InitialBackoff:       5 * time.Millisecond,
+						MaxBackoff:           10 * time.Millisecond, // Should cap the 100s to 10ms
+						RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+					}),
+					client.WithLogger(zap.NewNop()),
+				)
+
+				start := time.Now()
+				resp, err := c.Get(context.Background(), ts.URL)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				_ = resp.Body.Close()
+				elapsed := time.Since(start)
+
+				if attempts != 2 {
+					t.Errorf("expected 2 attempts, got %d", attempts)
+				}
+				if elapsed > 1*time.Second {
+					t.Errorf("expected backoff capped at MaxBackoff, took %v", elapsed)
+				}
+			},
+		},
+		{
+			name: "Retry with Jitter and non-retryable error evaluation",
+			run: func(t *testing.T) {
+				var attempts int
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					attempts++
+					if attempts < 3 {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer ts.Close()
+
+				c := client.New(
+					client.WithRetryPolicy(client.RetryPolicy{
+						MaxRetries:           2,
+						InitialBackoff:       0, // Tests default initial (100ms)
+						BackoffFactor:        0, // Tests default factor (2.0)
+						MaxBackoff:           20 * time.Millisecond,
+						Jitter:               true,
+						RetryableStatusCodes: []int{http.StatusBadGateway},
+					}),
+					client.WithLogger(zap.NewNop()),
+				)
+
+				resp, err := c.Get(context.Background(), ts.URL)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				_ = resp.Body.Close()
+				if attempts != 3 {
+					t.Errorf("expected 3 attempts with jitter, got %d", attempts)
 				}
 			},
 		},

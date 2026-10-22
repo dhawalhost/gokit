@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -436,5 +437,152 @@ func TestAuditMiddleware_TableDriven(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEventBuilder_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "EventBuilder WithActor, WithActorUser, WithTenant, and WithReason",
+			run: func(t *testing.T) {
+				mem := audit.NewMemorySink()
+				recorder := audit.NewRecorder(mem)
+				ctx := context.Background()
+
+				// 1. Using WithActor
+				err := recorder.NewEvent("user.login").
+					WithActor(audit.Actor{
+						ID:   "act-1",
+						Type: "service",
+						Name: "worker-svc",
+					}).
+					WithTenant("tenant-corp").
+					WithStatus(audit.StatusSuccess).
+					WithReason("mfa verified").
+					WithChange("status", "pending", "active").
+					Record(ctx)
+
+				if err != nil {
+					t.Fatalf("Record error: %v", err)
+				}
+
+				events := mem.Events()
+				if len(events) != 1 {
+					t.Fatalf("expected 1 event, got %d", len(events))
+				}
+				evt1 := events[0]
+				if evt1.Actor.ID != "act-1" || evt1.TenantID != "tenant-corp" || evt1.Reason != "mfa verified" {
+					t.Errorf("unexpected event1 properties: %+v", evt1)
+				}
+
+				// 2. Using WithActorUser
+				err = recorder.NewEvent("user.update").
+					WithActorUser("usr-100", "alice@example.com", "Alice", "admin").
+					WithStatus(audit.StatusFailure).
+					WithReason("permission denied").
+					Record(ctx)
+
+				if err != nil {
+					t.Fatalf("Record error: %v", err)
+				}
+
+				events = mem.Events()
+				if len(events) != 2 {
+					t.Fatalf("expected 2 events, got %d", len(events))
+				}
+				evt2 := events[1]
+				if evt2.Actor.ID != "usr-100" || evt2.Actor.Email != "alice@example.com" || evt2.Actor.Role != "admin" {
+					t.Errorf("unexpected event2 properties: %+v", evt2)
+				}
+
+				// Close
+				_ = recorder.Close()
+			},
+		},
+		{
+			name: "Recorder with nil sink Close returns nil",
+			run: func(t *testing.T) {
+				rec := audit.NewRecorder(nil)
+				if err := rec.Close(); err != nil {
+					t.Errorf("expected nil error on Close with nil sink, got %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+type failingSink struct{}
+
+func (failingSink) Write(context.Context, *audit.Event) error {
+	return errors.New("failing sink write error")
+}
+
+func (failingSink) Close() error {
+	return errors.New("failing sink close error")
+}
+
+func TestSink_EdgeCases_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "MultiSink error on Write and Close",
+			run: func(t *testing.T) {
+				ms := audit.NewMultiSink(failingSink{})
+				ctx := context.Background()
+
+				if err := ms.Write(ctx, &audit.Event{ID: "test"}); err == nil {
+					t.Error("expected MultiSink.Write to fail with failing sink")
+				}
+				if err := ms.Close(); err == nil {
+					t.Error("expected MultiSink.Close to fail with failing sink")
+				}
+			},
+		},
+		{
+			name: "MemorySink error after Close",
+			run: func(t *testing.T) {
+				mem := audit.NewMemorySink()
+				if err := mem.Close(); err != nil {
+					t.Fatalf("Close failed: %v", err)
+				}
+				if err := mem.Write(context.Background(), &audit.Event{ID: "closed"}); err != audit.ErrSinkClosed {
+					t.Errorf("expected ErrSinkClosed, got %v", err)
+				}
+			},
+		},
+		{
+			name: "AsyncSink defaults, double close, and write after close",
+			run: func(t *testing.T) {
+				mem := audit.NewMemorySink()
+				// Tests zero config defaults: BufferSize, Workers, BatchSize, FlushInterval
+				async := audit.NewAsyncSink(mem, audit.AsyncSinkConfig{})
+
+				if err := async.Close(); err != nil {
+					t.Fatalf("first Close failed: %v", err)
+				}
+				// Second Close is safe and idempotent (returns nil)
+				if err := async.Close(); err != nil {
+					t.Errorf("expected nil on second Close, got %v", err)
+				}
+
+				// Write after Close should return ErrSinkClosed
+				if err := async.Write(context.Background(), &audit.Event{ID: "after-close"}); err != audit.ErrSinkClosed {
+					t.Errorf("expected ErrSinkClosed on Write after Close, got %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
 	}
 }

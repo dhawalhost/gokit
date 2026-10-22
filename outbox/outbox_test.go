@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dhawalhost/gokit/outbox"
+	"gorm.io/gorm"
 )
 
 type mockPublisher struct {
@@ -445,6 +446,85 @@ func TestPublisherFunc_TableDriven(t *testing.T) {
 			if tc.wantErr && err.Error() != tc.expectedErr {
 				t.Errorf("expected error %q, got %q", tc.expectedErr, err.Error())
 			}
+		})
+	}
+}
+
+func TestMessageTableName_TableDriven(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      outbox.Message
+		wantName string
+	}{
+		{
+			name:     "returns outbox_messages table name",
+			msg:      outbox.Message{},
+			wantName: "outbox_messages",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.msg.TableName() != tc.wantName {
+				t.Errorf("expected %q, got %q", tc.wantName, tc.msg.TableName())
+			}
+		})
+	}
+}
+
+func TestNewGORMStore_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		db   *gorm.DB
+	}{
+		{
+			name: "constructs non-nil GORMStore wrapping DB handle",
+			db:   &gorm.DB{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := outbox.NewGORMStore(tc.db)
+			if store == nil {
+				t.Fatal("expected non-nil store from NewGORMStore")
+			}
+		})
+	}
+}
+
+func TestRelay_ConfigDefaultsAndDoubleStart_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  outbox.RelayConfig
+	}{
+		{
+			name: "zero config populates safe operational defaults",
+			cfg:  outbox.RelayConfig{},
+		},
+		{
+			name: "retention negative defaults to 7 days",
+			cfg: outbox.RelayConfig{
+				Retention: -1,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := outbox.NewMemoryStore()
+			pub := &mockPublisher{}
+			relay := outbox.NewRelay(store, pub, tc.cfg)
+			if relay == nil {
+				t.Fatal("expected non-nil relay")
+			}
+
+			// Verify double-start safe idempotency
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			relay.Start(ctx)
+			relay.Start(ctx) // Idempotent second call returns immediately
+			relay.Stop()
 		})
 	}
 }

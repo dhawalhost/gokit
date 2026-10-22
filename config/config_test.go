@@ -325,3 +325,104 @@ log:
 		t.Errorf("Updated log level mismatch: got %s", m.Get().Log.Level)
 	}
 }
+
+func TestConfigTypes_StringAndLogValue_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "Config, DatabaseConfig, RedisConfig, and TLSConfig safe stringers and slog values",
+			run: func(t *testing.T) {
+				cfg := Config{
+					Server: ServerConfig{Addr: ":8080"},
+					Database: DatabaseConfig{
+						DSN: "postgres://user:secretpass@localhost:5432/db",
+					},
+					Redis: RedisConfig{
+						Addr:     "localhost:6379",
+						Password: "redis-secret-pass",
+					},
+					JWT: JWTConfig{
+						Secret: "super-secret-jwt-key",
+					},
+				}
+
+				// Check Config Stringer and LogValue
+				if strings.Contains(cfg.String(), "secretpass") {
+					t.Errorf("Config.String() leaked DSN password: %s", cfg.String())
+				}
+				if cfg.GoString() != cfg.String() {
+					t.Errorf("Config.GoString mismatch")
+				}
+				if cfg.LogValue().Kind().String() != "String" {
+					t.Errorf("expected string slog value")
+				}
+
+				// DatabaseConfig
+				if strings.Contains(cfg.Database.String(), "secretpass") {
+					t.Errorf("DatabaseConfig.String leaked credentials")
+				}
+				if cfg.Database.GoString() != cfg.Database.String() {
+					t.Errorf("DatabaseConfig.GoString mismatch")
+				}
+				_ = cfg.Database.LogValue()
+
+				// RedisConfig
+				if strings.Contains(cfg.Redis.String(), "redis-secret-pass") {
+					t.Errorf("RedisConfig.String leaked credentials")
+				}
+				if cfg.Redis.GoString() != cfg.Redis.String() {
+					t.Errorf("RedisConfig.GoString mismatch")
+				}
+				_ = cfg.Redis.LogValue()
+
+				// JWTConfig
+				if strings.Contains(cfg.JWT.String(), "super-secret-jwt-key") {
+					t.Errorf("JWTConfig.String leaked secret")
+				}
+				if cfg.JWT.GoString() != cfg.JWT.String() {
+					t.Errorf("JWTConfig.GoString mismatch")
+				}
+				_ = cfg.JWT.LogValue()
+			},
+		},
+		{
+			name: "Secret LogValue and UnmarshalJSON",
+			run: func(t *testing.T) {
+				var s Secret
+				err := json.Unmarshal([]byte(`"my-super-secret-api-token"`), &s)
+				if err != nil {
+					t.Fatalf("Secret UnmarshalJSON error: %v", err)
+				}
+				if s.Expose() != "my-super-secret-api-token" {
+					t.Errorf("expected my-super-secret-api-token, got %s", s.Expose())
+				}
+				if s.String() != MaskedSecretPlaceholder {
+					t.Errorf("expected masked placeholder in String(), got %s", s.String())
+				}
+				if s.LogValue().String() != MaskedSecretPlaceholder {
+					t.Errorf("expected masked in LogValue")
+				}
+			},
+		},
+		{
+			name: "MustNewManager succeeds for valid and panics for invalid",
+			run: func(t *testing.T) {
+				m := MustNewManager("")
+				if m == nil {
+					t.Fatal("expected non-nil manager from MustNewManager")
+				}
+
+				loaded := MustLoad("")
+				if loaded == nil {
+					t.Fatal("expected non-nil config from MustLoad")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}

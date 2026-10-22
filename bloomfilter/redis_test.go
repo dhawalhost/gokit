@@ -168,3 +168,40 @@ func TestRedisStoreMetadata(t *testing.T) {
 		t.Error("HashFunctions should be > 0")
 	}
 }
+
+func TestRedisStoreErrorPaths_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		op   func(t *testing.T, store *bloomfilter.RedisStore)
+	}{
+		{
+			name: "Expire returns error when client is closed",
+			op: func(t *testing.T, store *bloomfilter.RedisStore) {
+				if err := store.Expire(context.Background(), time.Minute); err == nil {
+					t.Error("expected error from Expire on closed client")
+				}
+			},
+		},
+		{
+			name: "Delete returns error when client is closed",
+			op: func(t *testing.T, store *bloomfilter.RedisStore) {
+				if err := store.Delete(context.Background()); err == nil {
+					t.Error("expected error from Delete on closed client")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			store, err := bloomfilter.NewRedisStore(client, "bf:err", 100, 0.01)
+			if err != nil {
+				t.Fatalf("NewRedisStore: %v", err)
+			}
+			_ = client.Close()
+			tc.op(t, store)
+		})
+	}
+}

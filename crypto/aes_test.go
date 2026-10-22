@@ -101,6 +101,15 @@ func TestAES_Errors_TableDriven(t *testing.T) {
 			},
 		},
 		{
+			name: "decrypt fails on invalid key length",
+			run: func(t *testing.T) {
+				_, err := crypto.Decrypt([]byte("plain"), []byte("short"))
+				if err == nil {
+					t.Fatal("expected error for bad key length on Decrypt")
+				}
+			},
+		},
+		{
 			name: "encrypt string fails on invalid key length",
 			run: func(t *testing.T) {
 				_, err := crypto.EncryptString("plaintext", []byte("short"))

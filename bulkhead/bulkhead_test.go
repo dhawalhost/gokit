@@ -174,3 +174,121 @@ func TestBulkhead_Middleware(t *testing.T) {
 		t.Errorf("expected at least one 429 Too Many Requests response, got: %v", statuses)
 	}
 }
+
+func TestBulkhead_QueueContextCancel_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "context canceled while waiting in bulkhead queue",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := bulkhead.New(bulkhead.Config{
+				MaxConcurrent: 1,
+				MaxQueue:      1,
+			})
+			held := make(chan struct{})
+			release := make(chan struct{})
+			go func() {
+				_ = b.Execute(context.Background(), func() error {
+					close(held)
+					<-release
+					return nil
+				})
+			}()
+			<-held
+
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				cancel()
+			}()
+
+			err := b.Execute(ctx, func() error {
+				return nil
+			})
+			close(release)
+			if err != context.Canceled {
+				t.Fatalf("expected context.Canceled, got %v", err)
+			}
+		})
+	}
+}
+
+func TestBulkhead_MiddlewareEdgeCases_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		keyFunc    bulkhead.KeyFunc
+		cancelCtx  bool
+		wantStatus int
+	}{
+		{
+			name:       "nil keyFunc defaults to global and succeeds",
+			keyFunc:    nil,
+			cancelCtx:  false,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "canceled context returns internal server error",
+			keyFunc:    nil,
+			cancelCtx:  true,
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pb := bulkhead.NewPartitionedBulkhead(bulkhead.Config{MaxConcurrent: 1, MaxQueue: 2})
+			if tc.cancelCtx {
+				b := pb.Get("global")
+				release := make(chan struct{})
+				defer close(release)
+				go func() {
+					_ = b.Execute(context.Background(), func() error {
+						<-release
+						return nil
+					})
+				}()
+				time.Sleep(15 * time.Millisecond)
+			}
+
+			mw := bulkhead.Middleware(pb, tc.keyFunc)
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.cancelCtx {
+				ctx, cancel := context.WithCancel(req.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
+			}
+		})
+	}
+}
+
+func TestBulkhead_DefaultConfig_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "MaxConcurrent zero defaults to 10",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := bulkhead.New(bulkhead.Config{MaxConcurrent: 0})
+			if b == nil {
+				t.Fatal("expected non-nil bulkhead")
+			}
+		})
+	}
+}

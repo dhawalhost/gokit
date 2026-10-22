@@ -12,6 +12,7 @@
 | `idgen.NewUUIDv7()` | 36 chars | **Yes** (millisecond) | Optimal for database primary keys (eliminates B-Tree index fragmentation) |
 | `idgen.NewULID()` | 26 chars | **Yes** (millisecond) | Crockford Base32 encoded, lexicographically sortable |
 | `idgen.NewNanoID()` | 21 chars | No | Compact, URL-friendly unique identifier |
+| `idgen.NewShardIDGenerator(shardID)` | 64-bit int | **Yes** (millisecond) | Snowflake/Instagram-style 64-bit ID with embedded 13-bit logical shard routing |
 
 ---
 
@@ -32,6 +33,14 @@ func main() {
     ulid  := idgen.NewULID()     // "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     nano  := idgen.MustNanoID()  // "V1StGXR8_Z5jdHi6B-myT"
 
-    fmt.Println(uuid4, uuid7, ulid, nano)
+    // 64-bit Shard-Aware ID (Instagram / Notion architecture)
+    shardGen, _ := idgen.NewShardIDGenerator(480) // Logical shard 480
+    shardID, _ := shardGen.NextID()               // e.g. 142278492049281024
+
+    // O(1) bitshift routing without database lookups:
+    route := idgen.ExtractShardID(shardID)       // returns 480
+
+    fmt.Println(uuid4, uuid7, ulid, nano, shardID, route)
 }
 ```
+

@@ -301,3 +301,81 @@ func TestIdempotency_CacheStore_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestStore_UnlockAndExpiration_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "InMemoryStore Unlock releases lock for immediate re-acquisition",
+			run: func(t *testing.T) {
+				store := idempotency.NewInMemoryStore()
+				ctx := context.Background()
+
+				acquired, err := store.Lock(ctx, "lock-key", time.Minute)
+				if err != nil || !acquired {
+					t.Fatalf("expected lock acquisition, got %v, err=%v", acquired, err)
+				}
+
+				// Unlock
+				err = store.Unlock(ctx, "lock-key")
+				if err != nil {
+					t.Fatalf("Unlock error: %v", err)
+				}
+
+				// Re-acquire immediately
+				acquired, err = store.Lock(ctx, "lock-key", time.Minute)
+				if err != nil || !acquired {
+					t.Fatalf("expected re-acquisition after unlock, got %v, err=%v", acquired, err)
+				}
+			},
+		},
+		{
+			name: "CacheStore Unlock releases lock and Get handles unmarshal error",
+			run: func(t *testing.T) {
+				mc := newMockCache()
+				store := idempotency.NewCacheStore(mc)
+				ctx := context.Background()
+
+				// Lock then Unlock
+				_, _ = store.Lock(ctx, "cache-lock", time.Minute)
+				err := store.Unlock(ctx, "cache-lock")
+				if err != nil {
+					t.Fatalf("CacheStore Unlock error: %v", err)
+				}
+
+				// Corrupt cached JSON
+				_ = mc.Set(ctx, "idemp:resp:corrupt-key", "{invalid-json", time.Minute)
+				_, found, err := store.Get(ctx, "corrupt-key")
+				if err == nil || found {
+					t.Errorf("expected error on corrupt JSON, got err=%v, found=%v", err, found)
+				}
+			},
+		},
+		{
+			name: "InMemoryStore Cleanup purges expired entries",
+			run: func(t *testing.T) {
+				store := idempotency.NewInMemoryStore()
+				store.SetExpiredResponse("expired-req")
+
+				// Ensure entry was placed in internal store
+				if !store.HasResponse("expired-req") {
+					t.Fatal("expected expired-req to be present in internal map initially")
+				}
+
+				// Trigger cleanup
+				store.CleanupForTest()
+
+				// Verify purged from internal map
+				if store.HasResponse("expired-req") {
+					t.Fatal("expected expired-req to be purged by cleanup")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}

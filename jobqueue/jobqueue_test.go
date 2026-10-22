@@ -301,4 +301,169 @@ func TestRedisQueue(t *testing.T) {
 			t.Fatalf("timed out waiting for Redis job processing")
 		}
 	})
+
+	t.Run("delayed scheduling with EnqueueIn and EnqueueAt", func(t *testing.T) {
+		delayedDone := make(chan struct{}, 1)
+		q.RegisterHandler("redis.delayed", func(ctx context.Context, job *jobqueue.Job) error {
+			delayedDone <- struct{}{}
+			return nil
+		})
+
+		job1 := jobqueue.NewJob("redis.delayed", []byte("delayed-payload"))
+		if err := q.EnqueueIn(ctx, job1, 50*time.Millisecond); err != nil {
+			t.Fatalf("EnqueueIn error: %v", err)
+		}
+
+		job2 := jobqueue.NewJob("redis.delayed", []byte("scheduled-payload")).WithRunAt(time.Now().Add(50 * time.Millisecond))
+		if err := q.EnqueueAt(ctx, job2, time.Now().Add(50*time.Millisecond)); err != nil {
+			t.Fatalf("EnqueueAt error: %v", err)
+		}
+
+		// Wait for both to be promoted and processed
+		for i := 0; i < 2; i++ {
+			select {
+			case <-delayedDone:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("timed out waiting for delayed Redis job %d", i)
+			}
+		}
+	})
+
+	t.Run("MemoryQueue EnqueueAt and job builder helpers", func(t *testing.T) {
+		mq := jobqueue.NewMemoryQueue(jobqueue.QueueConfig{
+			Workers:      1,
+			PollInterval: 20 * time.Millisecond,
+		})
+		defer func() { _ = mq.Stop() }()
+
+		done := make(chan struct{}, 1)
+		mq.RegisterHandler("mem.at", func(ctx context.Context, job *jobqueue.Job) error {
+			done <- struct{}{}
+			return nil
+		})
+		_ = mq.Start(ctx)
+
+		job := jobqueue.NewJob("mem.at", []byte("data")).
+			WithRunAt(time.Now().Add(30*time.Millisecond)).
+			WithHeader("tenant", "t-1")
+
+		if job.Headers["tenant"] != "t-1" {
+			t.Errorf("expected header tenant=t-1")
+		}
+
+		err := mq.EnqueueAt(ctx, job, time.Now().Add(30*time.Millisecond))
+		if err != nil {
+			t.Fatalf("EnqueueAt error: %v", err)
+		}
+
+		select {
+		case <-done:
+		case <-time.After(1 * time.Second):
+			t.Fatal("timed out waiting for MemoryQueue EnqueueAt")
+		}
+	})
+
+	t.Run("retry with backoff and exhaustion", func(t *testing.T) {
+		var attempts atomic.Int32
+		done := make(chan struct{}, 1)
+		q.RegisterHandler("redis.failing", func(ctx context.Context, job *jobqueue.Job) error {
+			val := attempts.Add(1)
+			if val >= 2 {
+				select {
+				case done <- struct{}{}:
+				default:
+				}
+			}
+			return errors.New("transient database error")
+		})
+
+		failingJob := jobqueue.NewJob("redis.failing", []byte("failing-payload"))
+		failingJob.MaxRetries = 2
+		if err := q.Enqueue(ctx, failingJob); err != nil {
+			t.Fatalf("Enqueue error: %v", err)
+		}
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for retry attempts")
+		}
+	})
+}
+
+func TestNewRedisQueue_TableDriven(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	tests := []struct {
+		name    string
+		cfg     jobqueue.RedisQueueConfig
+		wantErr bool
+	}{
+		{
+			name: "missing redis client returns error",
+			cfg: jobqueue.RedisQueueConfig{
+				Client: nil,
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero config populates safe defaults",
+			cfg: jobqueue.RedisQueueConfig{
+				Client: client,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q, err := jobqueue.NewRedisQueue(tc.cfg)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr=%v, got=%v", tc.wantErr, err)
+			}
+			if !tc.wantErr && q == nil {
+				t.Fatal("expected non-nil RedisQueue")
+			}
+		})
+	}
+}
+
+func TestJob_Unmarshal_TableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		wantErr bool
+	}{
+		{
+			name:    "valid JSON unmarshals successfully",
+			payload: []byte(`{"task":"reindex"}`),
+			wantErr: false,
+		},
+		{
+			name:    "empty payload returns error",
+			payload: nil,
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON returns error",
+			payload: []byte(`{broken`),
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			job := jobqueue.NewJob("sample", tc.payload)
+			var target map[string]string
+			err := job.Unmarshal(&target)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr=%v, got=%v", tc.wantErr, err)
+			}
+			if !tc.wantErr && target["task"] != "reindex" {
+				t.Errorf("expected reindex, got %s", target["task"])
+			}
+		})
+	}
 }

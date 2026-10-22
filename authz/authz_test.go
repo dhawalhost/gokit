@@ -424,3 +424,54 @@ func TestMiddlewares_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestRoleMap_SetRole_And_ScopeParsing_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "SetRole dynamically updates role permissions",
+			run: func(t *testing.T) {
+				rm := authz.NewRoleMap(map[string][]string{
+					"editor": {"posts:read"},
+				})
+
+				// Update role with additional permission
+				rm.SetRole("editor", "posts:read", "posts:write")
+				perms := rm.PermissionsForRoles("editor")
+				if len(perms) != 2 {
+					t.Fatalf("expected 2 permissions, got %d", len(perms))
+				}
+			},
+		},
+		{
+			name: "SubjectFromContext parses space-separated OAuth2 scopes from JWT claims",
+			run: func(t *testing.T) {
+				// Inject JWT claims with space-separated scope into context
+				ctx := context.WithValue(context.Background(), struct{}{}, nil)
+				claims := jwt.MapClaims{
+					"sub":   "oauth2-user",
+					"scope": "read:profile write:profile admin:access",
+				}
+				// Use middleware context injection for claims
+				ctx = middleware.WithClaims(context.Background(), claims)
+
+				sub, ok := authz.SubjectFromContext(ctx)
+				if !ok {
+					t.Fatalf("expected subject to be resolved from claims")
+				}
+				if len(sub.Permissions) != 3 {
+					t.Fatalf("expected 3 permissions from scope, got %d", len(sub.Permissions))
+				}
+				if sub.Permissions[0] != "read:profile" || sub.Permissions[1] != "write:profile" || sub.Permissions[2] != "admin:access" {
+					t.Errorf("unexpected parsed permissions: %v", sub.Permissions)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}

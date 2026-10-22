@@ -10,6 +10,8 @@ import (
 
 	"github.com/dhawalhost/gokit/middleware"
 	"github.com/dhawalhost/gokit/multitenancy"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type mockCache struct {
@@ -304,5 +306,218 @@ func TestRequireTenantMiddleware_TableDriven(t *testing.T) {
 				t.Errorf("handler executed = %v, want %v", executed, tc.wantExecuted)
 			}
 		})
+	}
+}
+
+func TestTenantFromContext_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func() context.Context
+		wantTenant multitenancy.Tenant
+		wantFound  bool
+	}{
+		{
+			name: "full Tenant injected with WithTenant",
+			setup: func() context.Context {
+				return multitenancy.WithTenant(context.Background(), multitenancy.Tenant{
+					ID:   "tenant-corp",
+					Name: "Corp Inc",
+					Tier: "enterprise",
+				})
+			},
+			wantTenant: multitenancy.Tenant{ID: "tenant-corp", Name: "Corp Inc", Tier: "enterprise"},
+			wantFound:  true,
+		},
+		{
+			name: "fallback to middleware.WithTenantID",
+			setup: func() context.Context {
+				return middleware.WithTenantID(context.Background(), "middleware-tenant")
+			},
+			wantTenant: multitenancy.Tenant{ID: "middleware-tenant"},
+			wantFound:  true,
+		},
+		{
+			name: "empty context returns zero Tenant and false",
+			setup: func() context.Context {
+				return context.Background()
+			},
+			wantTenant: multitenancy.Tenant{},
+			wantFound:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := multitenancy.TenantFromContext(tc.setup())
+			if ok != tc.wantFound {
+				t.Errorf("found = %v, want %v", ok, tc.wantFound)
+			}
+			if got != tc.wantTenant {
+				t.Errorf("got tenant %+v, want %+v", got, tc.wantTenant)
+			}
+		})
+	}
+}
+
+func TestContextScopedCache_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "ContextScopedCache Set, Get, Exists, and Delete operations",
+			run: func(t *testing.T) {
+				raw := newMockCache()
+				csc := multitenancy.NewContextScopedCache(raw)
+				ctx := multitenancy.WithTenantID(context.Background(), "tenant-a")
+
+				// Set
+				err := csc.Set(ctx, "session:1", "val-1", 10*time.Minute)
+				if err != nil {
+					t.Fatalf("Set error: %v", err)
+				}
+
+				// Exists
+				exists, err := csc.Exists(ctx, "session:1")
+				if err != nil || !exists {
+					t.Fatalf("expected key to exist, got exists=%v, err=%v", exists, err)
+				}
+
+				// Get
+				val, err := csc.Get(ctx, "session:1")
+				if err != nil || val != "val-1" {
+					t.Fatalf("expected val-1, got %q, err=%v", val, err)
+				}
+
+				// Delete empty keys
+				err = csc.Delete(ctx)
+				if err != nil {
+					t.Fatalf("Delete empty keys error: %v", err)
+				}
+
+				// Delete multiple keys
+				err = csc.Delete(ctx, "session:1")
+				if err != nil {
+					t.Fatalf("Delete key error: %v", err)
+				}
+
+				// Exists after delete
+				exists, err = csc.Exists(ctx, "session:1")
+				if err != nil || exists {
+					t.Fatalf("expected key to not exist, got exists=%v", exists)
+				}
+
+				// Flush
+				_ = csc.Set(ctx, "temp", "val", time.Hour)
+				err = csc.Flush(ctx)
+				if err != nil {
+					t.Fatalf("Flush error: %v", err)
+				}
+				exists, _ = csc.Exists(ctx, "temp")
+				if exists {
+					t.Fatal("expected temp key to be flushed")
+				}
+			},
+		},
+		{
+			name: "ScopedCache Flush and ScopedKeyFromContext fallback",
+			run: func(t *testing.T) {
+				raw := newMockCache()
+				sc := multitenancy.NewScopedCache(raw, "tenant-b")
+				ctx := context.Background()
+
+				_ = sc.Set(ctx, "user:1", "data", time.Hour)
+				err := sc.Flush(ctx)
+				if err != nil {
+					t.Fatalf("ScopedCache Flush error: %v", err)
+				}
+
+				// ScopedKeyFromContext with no tenant in context
+				key := multitenancy.ScopedKeyFromContext(context.Background(), "unscoped")
+				if key != "tenant:default:unscoped" {
+					t.Fatalf("expected tenant:default:unscoped when no tenant in ctx, got %q", key)
+				}
+
+				// TenantModel GetTenantID and SetTenantID
+				tm := &multitenancy.TenantModel{}
+				tm.SetTenantID("t-model")
+				if tm.GetTenantID() != "t-model" {
+					t.Fatalf("expected t-model, got %q", tm.GetTenantID())
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestScope_TableDriven(t *testing.T) {
+	tests := []struct {
+		name     string
+		tenantID string
+		ctx      context.Context
+	}{
+		{
+			name:     "Scope returns valid modifier",
+			tenantID: "tenant-100",
+			ctx:      context.Background(),
+		},
+		{
+			name:     "ScopeFromContext with tenant in context",
+			tenantID: "tenant-200",
+			ctx:      multitenancy.WithTenantID(context.Background(), "tenant-200"),
+		},
+		{
+			name:     "ScopeFromContext without tenant in context",
+			tenantID: "",
+			ctx:      context.Background(),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &gorm.DB{Config: &gorm.Config{}, Statement: &gorm.Statement{Clauses: make(map[string]clause.Clause)}}
+			var scoped *gorm.DB
+			if tc.tenantID != "" && tc.ctx == context.Background() {
+				scoped = multitenancy.Scope(tc.tenantID)(db)
+			} else {
+				scoped = multitenancy.ScopeFromContext(tc.ctx)(db)
+			}
+			if scoped == nil {
+				t.Fatal("expected non-nil scoped db")
+			}
+		})
+	}
+}
+
+func TestScopedCache_EmptyKeys_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "ScopedCache.Delete with zero keys returns nil",
+			run: func(t *testing.T) {
+				cache := multitenancy.NewScopedCache(newMockCache(), "t1")
+				if err := cache.Delete(context.Background()); err != nil {
+					t.Fatalf("expected nil error on empty delete, got %v", err)
+				}
+			},
+		},
+		{
+			name: "ContextScopedCache.Delete with zero keys returns nil",
+			run: func(t *testing.T) {
+				cache := multitenancy.NewContextScopedCache(newMockCache())
+				if err := cache.Delete(context.Background()); err != nil {
+					t.Fatalf("expected nil error on empty delete, got %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
 	}
 }

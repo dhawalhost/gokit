@@ -211,3 +211,95 @@ func TestDispatcher(t *testing.T) {
 		}
 	})
 }
+
+func TestVerifySignature_FutureTimestamp_TableDriven(t *testing.T) {
+	secret := []byte("secret")
+	payload := []byte(`{"event":"test"}`)
+	futureUnix := strconv.FormatInt(time.Now().UTC().Add(10*time.Minute).Unix(), 10)
+	futureSig := webhook.ComputeSignature(payload, futureUnix, secret)
+
+	tests := []struct {
+		name    string
+		maxAge  time.Duration
+		wantErr bool
+	}{
+		{
+			name:    "future timestamp beyond maxAge is rejected",
+			maxAge:  2 * time.Minute,
+			wantErr: true,
+		},
+		{
+			name:    "future timestamp within maxAge is accepted",
+			maxAge:  20 * time.Minute,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := webhook.VerifySignature(payload, futureSig, futureUnix, secret, tc.maxAge)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr=%v, got=%v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestNewDispatcher_Defaults_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  webhook.DispatcherConfig
+	}{
+		{
+			name: "zero config populates safe defaults",
+			cfg:  webhook.DispatcherConfig{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := webhook.NewDispatcher(tc.cfg)
+			if d == nil {
+				t.Fatal("expected non-nil Dispatcher")
+			}
+		})
+	}
+}
+
+func TestInboundMiddleware_DefaultMaxAge_TableDriven(t *testing.T) {
+	secret := []byte("secret-key")
+	payload := []byte(`{"ping":true}`)
+	nowUnix := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	sig := webhook.ComputeSignature(payload, nowUnix, secret)
+
+	tests := []struct {
+		name       string
+		maxAge     time.Duration
+		wantStatus int
+	}{
+		{
+			name:       "maxAge <= 0 defaults to DefaultMaxAge",
+			maxAge:     0,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mw := webhook.InboundMiddleware(secret, tc.maxAge)
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payload))
+			req.Header.Set("X-Webhook-Signature", sig)
+			req.Header.Set("X-Webhook-Timestamp", nowUnix)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
+			}
+		})
+	}
+}

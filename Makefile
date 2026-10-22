@@ -1,4 +1,4 @@
-.PHONY: test test-race lint tidy vet fmt build vuln cover hooks
+.PHONY: test test-race lint tidy vet fmt build vuln cover coverage test-coverage hooks
 
 # Run all unit tests.
 test:
@@ -108,6 +108,43 @@ cover:
 		./validator/... \
 		./webhook/...
 	go tool cover -html=coverage.out
+
+# Run tests and print coverage summary to terminal (without opening browser).
+coverage test-coverage:
+	go test -coverprofile=coverage.out -covermode=atomic \
+		./audit/... \
+		./authz/... \
+		./bloomfilter/... \
+		./bulkhead/... \
+		./cache/... \
+		./circuitbreaker/... \
+		./client/... \
+		./config/... \
+		./crypto/... \
+		./database/... \
+		./distlock/... \
+		./errors/... \
+		./eventbus/... \
+		./featureflag/... \
+		./health/... \
+		./idempotency/... \
+		./idgen/... \
+		./jobqueue/... \
+		./logger/... \
+		./middleware/... \
+		./multitenancy/... \
+		./observability/... \
+		./outbox/... \
+		./pagination/... \
+		./ratelimit/... \
+		./response/... \
+		./router/... \
+		./saga/... \
+		./server/... \
+		./testutil/... \
+		./validator/... \
+		./webhook/...
+	@go tool cover -func=coverage.out | tail -n 1
 
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --tests=false --timeout=15m ./...

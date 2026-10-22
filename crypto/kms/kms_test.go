@@ -303,3 +303,109 @@ func TestEnvelopeCipher_StringHelpers(t *testing.T) {
 		})
 	}
 }
+
+func TestEnvelope_EdgeCases_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "nil Envelope Marshal returns ErrInvalidEnvelope",
+			run: func(t *testing.T) {
+				var env *kms.Envelope
+				_, err := env.Marshal()
+				if err != kms.ErrInvalidEnvelope {
+					t.Fatalf("expected ErrInvalidEnvelope, got %v", err)
+				}
+				_, err = env.MarshalBase64()
+				if err != kms.ErrInvalidEnvelope {
+					t.Fatalf("expected ErrInvalidEnvelope from MarshalBase64, got %v", err)
+				}
+			},
+		},
+		{
+			name: "Unmarshal invalid or empty fields returns error",
+			run: func(t *testing.T) {
+				env := &kms.Envelope{}
+				err := env.Unmarshal([]byte(`{"key_id":"k1"}`))
+				if err != kms.ErrInvalidEnvelope {
+					t.Fatalf("expected ErrInvalidEnvelope for missing fields, got %v", err)
+				}
+				err = env.Unmarshal([]byte(`invalid-json`))
+				if err == nil {
+					t.Fatal("expected error on invalid JSON")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestKeyProvider_AndCipher_EdgeCases_TableDriven(t *testing.T) {
+	key := generateTestKey()
+	provider, err := kms.NewLocalKeyProvider(map[string][]byte{"k1": key}, "k1")
+	if err != nil {
+		t.Fatalf("NewLocalKeyProvider error: %v", err)
+	}
+	cipher := kms.NewEnvelopeCipher(provider)
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "GenerateDataKey returns ErrKeyNotFound for missing key",
+			run: func(t *testing.T) {
+				_, _, err := provider.GenerateDataKey(ctx, "nonexistent-key")
+				if err == nil {
+					t.Error("expected error for nonexistent key in GenerateDataKey")
+				}
+			},
+		},
+		{
+			name: "DecryptDataKey returns ErrKeyNotFound for missing key",
+			run: func(t *testing.T) {
+				_, err := provider.DecryptDataKey(ctx, "nonexistent-key", []byte("encrypted"))
+				if err == nil {
+					t.Error("expected error for nonexistent key in DecryptDataKey")
+				}
+			},
+		},
+		{
+			name: "DecryptDataKey returns error for invalid encrypted DEK",
+			run: func(t *testing.T) {
+				_, err := provider.DecryptDataKey(ctx, "k1", []byte("too-short"))
+				if err == nil {
+					t.Error("expected error for malformed ciphertext in DecryptDataKey")
+				}
+			},
+		},
+		{
+			name: "EncryptString and DecryptString error handling",
+			run: func(t *testing.T) {
+				// Encrypt with unknown key
+				if _, err := cipher.EncryptString(ctx, "unknown-key", "secret"); err == nil {
+					t.Error("expected error when encrypting with unknown key")
+				}
+
+				// Decrypt with invalid base64
+				if _, err := cipher.DecryptString(ctx, "not-valid-base64!!!"); err == nil {
+					t.Error("expected error when decrypting invalid base64")
+				}
+
+				// Decrypt with base64 that is not a valid envelope
+				if _, err := cipher.DecryptString(ctx, "aW52YWxpZCBqc29u"); err == nil { // "invalid json" in base64
+					t.Error("expected error when decrypting non-envelope base64")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.run)
+	}
+}
