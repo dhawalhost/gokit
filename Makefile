@@ -34,6 +34,7 @@ test:
 		./saga/... \
 		./server/... \
 		./storage/... \
+		./streaming/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
@@ -72,6 +73,7 @@ test-race:
 		./saga/... \
 		./server/... \
 		./storage/... \
+		./streaming/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
@@ -110,6 +112,7 @@ cover:
 		./saga/... \
 		./server/... \
 		./storage/... \
+		./streaming/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
@@ -149,6 +152,7 @@ coverage test-coverage:
 		./saga/... \
 		./server/... \
 		./storage/... \
+		./streaming/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
