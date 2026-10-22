@@ -17,6 +17,7 @@ test:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./grpc/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
@@ -54,6 +55,7 @@ test-race:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./grpc/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
@@ -91,6 +93,7 @@ cover:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./grpc/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
@@ -129,6 +132,7 @@ coverage test-coverage:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./grpc/... \
 		./health/... \
 		./idempotency/... \
 		./idgen/... \
