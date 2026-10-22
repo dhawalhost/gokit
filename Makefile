@@ -22,9 +22,11 @@ test:
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
+		./loadshed/... \
 		./logger/... \
 		./middleware/... \
 		./multitenancy/... \
+		./notify/... \
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
@@ -61,9 +63,11 @@ test-race:
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
+		./loadshed/... \
 		./logger/... \
 		./middleware/... \
 		./multitenancy/... \
+		./notify/... \
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
@@ -100,9 +104,11 @@ cover:
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
+		./loadshed/... \
 		./logger/... \
 		./middleware/... \
 		./multitenancy/... \
+		./notify/... \
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
@@ -140,9 +146,11 @@ coverage test-coverage:
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
+		./loadshed/... \
 		./logger/... \
 		./middleware/... \
 		./multitenancy/... \
+		./notify/... \
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
