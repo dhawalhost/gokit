@@ -34,6 +34,7 @@ test:
 		./response/... \
 		./router/... \
 		./saga/... \
+		./scheduler/... \
 		./server/... \
 		./storage/... \
 		./streaming/... \
@@ -75,6 +76,7 @@ test-race:
 		./response/... \
 		./router/... \
 		./saga/... \
+		./scheduler/... \
 		./server/... \
 		./storage/... \
 		./streaming/... \
@@ -116,6 +118,7 @@ cover:
 		./response/... \
 		./router/... \
 		./saga/... \
+		./scheduler/... \
 		./server/... \
 		./storage/... \
 		./streaming/... \
@@ -158,6 +161,7 @@ coverage test-coverage:
 		./response/... \
 		./router/... \
 		./saga/... \
+		./scheduler/... \
 		./server/... \
 		./storage/... \
 		./streaming/... \
