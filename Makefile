@@ -32,6 +32,7 @@ test:
 		./router/... \
 		./saga/... \
 		./server/... \
+		./storage/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
@@ -68,6 +69,7 @@ test-race:
 		./router/... \
 		./saga/... \
 		./server/... \
+		./storage/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
@@ -104,6 +106,7 @@ cover:
 		./router/... \
 		./saga/... \
 		./server/... \
+		./storage/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
@@ -141,6 +144,7 @@ coverage test-coverage:
 		./router/... \
 		./saga/... \
 		./server/... \
+		./storage/... \
 		./testutil/... \
 		./validator/... \
 		./webhook/...
