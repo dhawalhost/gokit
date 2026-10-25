@@ -58,6 +58,10 @@
 | `multitenancy` | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
 | `authz` | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
 | `crypto/kms` | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
+| `notify` | Multipart MIME email builder, STARTTLS SMTP sender, template engine, and mock test drivers |
+| `scheduler` | Distributed cron job scheduler with leader election via `distlock` across Kubernetes pods |
+| `i18n` | Internationalization with BCP 47 parsing, CLDR pluralization, JSON/YAML catalogs, and HTTP middleware |
+| `workflow` | Finite-State Machine (FSM) engine with conditional guards, lifecycle hooks, audit trail, and optimistic locking |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---

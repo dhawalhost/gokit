@@ -41,7 +41,8 @@ test:
 		./streaming/... \
 		./testutil/... \
 		./validator/... \
-		./webhook/...
+		./webhook/... \
+		./workflow/...
 
 # Run tests with the race detector.
 test-race:
@@ -84,7 +85,8 @@ test-race:
 		./streaming/... \
 		./testutil/... \
 		./validator/... \
-		./webhook/...
+		./webhook/... \
+		./workflow/...
 
 # Generate coverage report (opens in browser via 'go tool cover -html').
 cover:
@@ -127,7 +129,8 @@ cover:
 		./streaming/... \
 		./testutil/... \
 		./validator/... \
-		./webhook/...
+		./webhook/... \
+		./workflow/...
 	go tool cover -html=coverage.out
 
 # Run tests and print coverage summary to terminal (without opening browser).
@@ -171,7 +174,8 @@ coverage test-coverage:
 		./streaming/... \
 		./testutil/... \
 		./validator/... \
-		./webhook/...
+		./webhook/... \
+		./workflow/...
 	@go tool cover -func=coverage.out | tail -n 1
 
 lint:
