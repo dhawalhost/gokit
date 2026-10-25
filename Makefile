@@ -18,6 +18,7 @@ test:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./gateway/... \
 		./grpc/... \
 		./health/... \
 		./i18n/... \
@@ -63,6 +64,7 @@ test-race:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./gateway/... \
 		./grpc/... \
 		./health/... \
 		./i18n/... \
@@ -108,6 +110,7 @@ cover:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./gateway/... \
 		./grpc/... \
 		./health/... \
 		./i18n/... \
@@ -154,6 +157,7 @@ coverage test-coverage:
 		./errors/... \
 		./eventbus/... \
 		./featureflag/... \
+		./gateway/... \
 		./grpc/... \
 		./health/... \
 		./i18n/... \

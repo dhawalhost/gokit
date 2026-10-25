@@ -63,6 +63,7 @@
 | `i18n` | Internationalization with BCP 47 parsing, CLDR pluralization, JSON/YAML catalogs, and HTTP middleware |
 | `workflow` | Finite-State Machine (FSM) engine with conditional guards, lifecycle hooks, audit trail, and optimistic locking |
 | `batcher` | Micro-batching write buffer and request-coalescing DataLoader with memoization cache |
+| `gateway` | API Gateway reverse proxy, multi-strategy load balancing, and parallel scatter-gather BFF aggregator |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
