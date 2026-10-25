@@ -24,14 +24,19 @@ func routePattern(r *http.Request) string {
 	return r.URL.Path
 }
 
-// Metrics returns a middleware that records Prometheus metrics for each request.
-// InitMetrics must be called before this middleware is used.
-func Metrics() func(http.Handler) http.Handler {
+// HTTPMetrics returns a middleware that records Prometheus metrics for each request
+// into the provided Registry.
+func HTTPMetrics(reg *Registry) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if HTTPRequestsInFlight != nil {
-				HTTPRequestsInFlight.Inc()
-				defer HTTPRequestsInFlight.Dec()
+			if reg == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if reg.httpInFlight != nil {
+				reg.httpInFlight.Inc()
+				defer reg.httpInFlight.Dec()
 			}
 			rec := &mw.StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 			start := time.Now()
@@ -39,12 +44,22 @@ func Metrics() func(http.Handler) http.Handler {
 			elapsed := time.Since(start).Seconds()
 			status := strconv.Itoa(rec.Status)
 			path := routePattern(r)
-			if HTTPRequestDuration != nil {
-				HTTPRequestDuration.WithLabelValues(r.Method, path, status).Observe(elapsed)
+			if reg.httpDuration != nil {
+				reg.httpDuration.WithLabelValues(r.Method, path, status).Observe(elapsed)
 			}
-			if HTTPRequestsTotal != nil {
-				HTTPRequestsTotal.WithLabelValues(r.Method, path, status).Inc()
+			if reg.httpRequestsTotal != nil {
+				reg.httpRequestsTotal.WithLabelValues(r.Method, path, status).Inc()
 			}
+		})
+	}
+}
+
+// Metrics returns a middleware that records Prometheus metrics for each request.
+// InitMetrics must be called before this middleware is used.
+func Metrics() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			HTTPMetrics(DefaultRegistry())(next).ServeHTTP(w, r)
 		})
 	}
 }

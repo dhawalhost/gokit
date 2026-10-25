@@ -208,7 +208,13 @@ func (s *Scheduler) RunJob(ctx context.Context, jobID string) error {
 		return ErrJobNotFound
 	}
 
+	s.stopMu.RLock()
+	if s.stopped {
+		s.stopMu.RUnlock()
+		return ErrSchedulerStopped
+	}
 	s.activeWg.Add(1)
+	s.stopMu.RUnlock()
 	defer s.activeWg.Done()
 
 	return s.executeJob(ctx, entry, true)
