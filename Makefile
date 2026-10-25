@@ -19,6 +19,7 @@ test:
 		./featureflag/... \
 		./grpc/... \
 		./health/... \
+		./i18n/... \
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
@@ -61,6 +62,7 @@ test-race:
 		./featureflag/... \
 		./grpc/... \
 		./health/... \
+		./i18n/... \
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
@@ -103,6 +105,7 @@ cover:
 		./featureflag/... \
 		./grpc/... \
 		./health/... \
+		./i18n/... \
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
@@ -146,6 +149,7 @@ coverage test-coverage:
 		./featureflag/... \
 		./grpc/... \
 		./health/... \
+		./i18n/... \
 		./idempotency/... \
 		./idgen/... \
 		./jobqueue/... \
