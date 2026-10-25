@@ -4,6 +4,7 @@
 test:
 	go test \
 		./audit/... \
+		./batcher/... \
 		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
@@ -48,6 +49,7 @@ test:
 test-race:
 	go test -race \
 		./audit/... \
+		./batcher/... \
 		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
@@ -92,6 +94,7 @@ test-race:
 cover:
 	go test -coverprofile=coverage.out -covermode=atomic \
 		./audit/... \
+		./batcher/... \
 		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
@@ -137,6 +140,7 @@ cover:
 coverage test-coverage:
 	go test -coverprofile=coverage.out -covermode=atomic \
 		./audit/... \
+		./batcher/... \
 		./authz/... \
 		./bloomfilter/... \
 		./bulkhead/... \
