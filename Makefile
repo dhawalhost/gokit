@@ -37,6 +37,7 @@ test:
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
+		./pipeline/... \
 		./ratelimit/... \
 		./response/... \
 		./router/... \
@@ -90,6 +91,7 @@ test-race:
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
+		./pipeline/... \
 		./ratelimit/... \
 		./response/... \
 		./router/... \
@@ -143,6 +145,7 @@ cover:
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
+		./pipeline/... \
 		./ratelimit/... \
 		./response/... \
 		./router/... \
@@ -197,6 +200,7 @@ coverage test-coverage:
 		./observability/... \
 		./outbox/... \
 		./pagination/... \
+		./pipeline/... \
 		./ratelimit/... \
 		./response/... \
 		./router/... \

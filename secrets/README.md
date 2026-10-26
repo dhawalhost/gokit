@@ -43,7 +43,7 @@
 - **Leak-Proof Secret Container**:
   - Automatically overrides `String()` and `GoString()` to print `"[REDACTED]"`, preventing accidental leakage when printing structures, logging with Zap/Slog, or inspecting stack traces.
   - Implements `json.Marshaler` and `encoding.TextMarshaler` rendering `"[REDACTED]"`.
-  - Provides [`Zero()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/secrets/secret.go#L112) to securely scrub raw bytes from memory upon deallocation or rotation.
+  - Provides [`Zero()`](secret.go#L112) to securely scrub raw bytes from memory upon deallocation or rotation.
 - **Provider Abstractions**:
   - `MemoryProvider`: High-speed thread-safe in-memory provider for unit tests and local mocks.
   - `EnvProvider`: Automatically normalizes dot/dash-separated keys to uppercase with prefixing (e.g. `db.password` with `APP_` prefix reads `APP_DB_PASSWORD`).

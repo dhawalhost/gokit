@@ -26,52 +26,53 @@
 
 | Package | Description |
 |---|---|
-| `server` | `HTTPServer` wrapping `net/http` with chi, graceful shutdown, optional TLS |
-| `router` | Chi router constructors and `ServiceRouter` mount interface |
-| `middleware` | 11 composable middlewares: RequestID, Logger, Recovery, CORS, JWT, APIKey, TenantID, RateLimit, Timeout, SecureHeaders, Idempotency |
-| `idempotency` | IETF-compliant idempotency control with SHA-256 payload anti-collision, in-flight locking, and Redis/in-memory backends |
-| `ratelimit` | `Store` interface with in-memory token-bucket and Redis sliding-window backends |
-| `circuitbreaker` | Thread-safe closed/open/half-open circuit breaker |
-| `logger` | Zap wrapper with automatic sensitive key masking (`********`), global singleton, and context helpers |
-| `config` | Viper-backed config loader with hot-reloading (`NewManager`), secret auto-masking, `APP_*` env prefix, and YAML/.env support |
-| `database` | GORM v2 + pgxpool combined `DB` struct with pool management and migration helpers |
-| `diagnostics` | Runtime memory watchdog, automated watermark heap dumping, goroutine leak detector, and authenticated pprof |
-| `cache` | `Cache` interface with Redis backend |
-| `crypto` | AES-256-GCM, bcrypt, constant-time HMAC, JWT HS256/RS256, timing-safe PKCE, secure random |
-| `errors` | Structured `AppError` with HTTP status codes, safe `Wrap` error encapsulation, and JSON writing |
-| `response` | Generic `Response[T]` and `PaginatedResponse[T]` helpers |
-| `validator` | go-playground/validator wrapper with JSON bind |
-| `health` | Liveness and readiness HTTP handlers with named checkers |
-| `observability` | Prometheus metrics with route pattern cardinality protection, OTLP tracing, and chi-compatible middlewares |
-| `pagination` | Offset and cursor pagination parsed from HTTP requests |
-| `idgen` | UUID v4/v7, ULID, NanoID generation |
-| `bloomfilter` | In-memory and Redis-backed Bloom filter for probabilistic set membership |
-| `client` | Resilient outbound HTTP client with jittered exponential backoff, circuit breaker integration, tracing, and body replay |
-| `compression` | Multi-codec HTTP middleware and streaming compression (Zstandard, Brotli, Gzip, Deflate) with `sync.Pool` buffer recycling |
-| `distlock` | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
-| `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
-| `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
-| `eventbus` | Resilient Pub/Sub event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
-| `eventstore` | Event Sourcing & CQRS engine with append-only streams, optimistic concurrency, snapshotting, and projection catch-up |
-| `jobqueue` | Asynchronous background task runner with priority scheduling, worker pools, delayed jobs, and retry backoff |
-| `featureflag` | OpenFeature-compatible feature flag engine with deterministic canary rollouts and contextual targeting |
-| `webhook` | Inbound HMAC-SHA256 signature verification & outbound resilient webhook dispatcher with retries |
-| `saga` | Distributed transaction orchestrator with forward step execution and automated reverse compensations |
-| `bulkhead` | Semaphore-based concurrency limiter & tenant resource fair-sharing isolating downstream dependencies |
-| `multitenancy` | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
-| `authz` | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
-| `crypto/kms` | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
-| `notify` | Multipart MIME email builder, STARTTLS SMTP sender, template engine, and mock test drivers |
-| `scheduler` | Distributed cron job scheduler with leader election via `distlock` across Kubernetes pods |
-| `i18n` | Internationalization with BCP 47 parsing, CLDR pluralization, JSON/YAML catalogs, and HTTP middleware |
-| `workflow` | Finite-State Machine (FSM) engine with conditional guards, lifecycle hooks, audit trail, and optimistic locking |
-| `batcher` | Micro-batching write buffer and request-coalescing DataLoader with memoization cache |
-| `gateway` | API Gateway reverse proxy, multi-strategy load balancing, and parallel scatter-gather BFF aggregator |
-| `secrets` | Dynamic secret management, leak-proof memory zeroing, multi-provider fallback, and TTL caching |
-| `migration` | Standalone schema migration engine with embed.FS loading, dirty tracking, transactional DDL, and `distlock` integration |
-| `search` | Embedded in-memory full-text search engine with BM25 ranking, tokenizers, n-grams, fuzzy matching, and boolean queries |
-| `session` | Distributed HTTP session manager with anti-hijacking validation, sliding TTLs, flash data, and encrypted cookie stores |
-| `testutil` | Test helpers: logger, recorder, request builder, response assertions |
+| [`server`](server/README.md) | `HTTPServer` wrapping `net/http` with chi, graceful shutdown, optional TLS |
+| [`router`](router/README.md) | Chi router constructors and `ServiceRouter` mount interface |
+| [`middleware`](middleware/README.md) | 11 composable middlewares: RequestID, Logger, Recovery, CORS, JWT, APIKey, TenantID, RateLimit, Timeout, SecureHeaders, Idempotency |
+| [`idempotency`](idempotency/README.md) | IETF-compliant idempotency control with SHA-256 payload anti-collision, in-flight locking, and Redis/in-memory backends |
+| [`ratelimit`](ratelimit/README.md) | `Store` interface with in-memory token-bucket and Redis sliding-window backends |
+| [`circuitbreaker`](circuitbreaker/README.md) | Thread-safe closed/open/half-open circuit breaker |
+| [`logger`](logger/README.md) | Zap wrapper with automatic sensitive key masking (`********`), global singleton, and context helpers |
+| [`config`](config/README.md) | Viper-backed config loader with hot-reloading (`NewManager`), secret auto-masking, `APP_*` env prefix, and YAML/.env support |
+| [`database`](database/README.md) | GORM v2 + pgxpool combined `DB` struct with pool management and migration helpers |
+| [`diagnostics`](diagnostics/README.md) | Runtime memory watchdog, automated watermark heap dumping, goroutine leak detector, and authenticated pprof |
+| [`cache`](cache/README.md) | `Cache` interface with Redis backend |
+| [`crypto`](crypto/README.md) | AES-256-GCM, bcrypt, constant-time HMAC, JWT HS256/RS256, timing-safe PKCE, secure random |
+| [`errors`](errors/README.md) | Structured `AppError` with HTTP status codes, safe `Wrap` error encapsulation, and JSON writing |
+| [`response`](response/README.md) | Generic `Response[T]` and `PaginatedResponse[T]` helpers |
+| [`validator`](validator/README.md) | go-playground/validator wrapper with JSON bind |
+| [`health`](health/README.md) | Liveness and readiness HTTP handlers with named checkers |
+| [`observability`](observability/README.md) | Prometheus metrics with route pattern cardinality protection, OTLP tracing, and chi-compatible middlewares |
+| [`pagination`](pagination/README.md) | Offset and cursor pagination parsed from HTTP requests |
+| [`idgen`](idgen/README.md) | UUID v4/v7, ULID, NanoID generation |
+| [`bloomfilter`](bloomfilter/README.md) | In-memory and Redis-backed Bloom filter for probabilistic set membership |
+| [`client`](client/README.md) | Resilient outbound HTTP client with jittered exponential backoff, circuit breaker integration, tracing, and body replay |
+| [`compression`](compression/README.md) | Multi-codec HTTP middleware and streaming compression (Zstandard, Brotli, Gzip, Deflate) with `sync.Pool` buffer recycling |
+| [`distlock`](distlock/README.md) | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
+| [`audit`](audit/README.md) | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
+| [`outbox`](outbox/README.md) | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
+| [`eventbus`](eventbus/README.md) | Resilient Pub/Sub event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
+| [`eventstore`](eventstore/README.md) | Event Sourcing & CQRS engine with append-only streams, optimistic concurrency, snapshotting, and projection catch-up |
+| [`jobqueue`](jobqueue/README.md) | Asynchronous background task runner with priority scheduling, worker pools, delayed jobs, and retry backoff |
+| [`featureflag`](featureflag/README.md) | OpenFeature-compatible feature flag engine with deterministic canary rollouts and contextual targeting |
+| [`webhook`](webhook/README.md) | Inbound HMAC-SHA256 signature verification & outbound resilient webhook dispatcher with retries |
+| [`saga`](saga/README.md) | Distributed transaction orchestrator with forward step execution and automated reverse compensations |
+| [`bulkhead`](bulkhead/README.md) | Semaphore-based concurrency limiter & tenant resource fair-sharing isolating downstream dependencies |
+| [`multitenancy`](multitenancy/README.md) | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
+| [`authz`](authz/README.md) | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
+| [`crypto/kms`](crypto/kms/README.md) | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
+| [`notify`](notify/README.md) | Multipart MIME email builder, STARTTLS SMTP sender, template engine, and mock test drivers |
+| [`scheduler`](scheduler/README.md) | Distributed cron job scheduler with leader election via `distlock` across Kubernetes pods |
+| [`i18n`](i18n/README.md) | Internationalization with BCP 47 parsing, CLDR pluralization, JSON/YAML catalogs, and HTTP middleware |
+| [`workflow`](workflow/README.md) | Finite-State Machine (FSM) engine with conditional guards, lifecycle hooks, audit trail, and optimistic locking |
+| [`batcher`](batcher/README.md) | Micro-batching write buffer and request-coalescing DataLoader with memoization cache |
+| [`gateway`](gateway/README.md) | API Gateway reverse proxy, multi-strategy load balancing, and parallel scatter-gather BFF aggregator |
+| [`secrets`](secrets/README.md) | Dynamic secret management, leak-proof memory zeroing, multi-provider fallback, and TTL caching |
+| [`migration`](migration/README.md) | Standalone schema migration engine with embed.FS loading, dirty tracking, transactional DDL, and `distlock` integration |
+| [`search`](search/README.md) | Embedded in-memory full-text search engine with BM25 ranking, tokenizers, n-grams, fuzzy matching, and boolean queries |
+| [`session`](session/README.md) | Distributed HTTP session manager with anti-hijacking validation, sliding TTLs, flash data, and encrypted cookie stores |
+| [`pipeline`](pipeline/README.md) | Concurrent stream ETL pipeline, tumbling/sliding temporal windows, fan-in/fan-out, bounded backpressure, and dead-letter queues |
+| [`testutil`](testutil/README.md) | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
 
@@ -868,9 +869,9 @@ See [examples/README.md](examples/README.md) for detailed usage instructions and
 ### Additional Documentation
 
 - **[SECURITY.md](SECURITY.md)**: Security policy, vulnerability reporting, and best practices
-- **[CHANGELOG.md](CHANGELOG.md)**: Detailed version history and migration guides
+- **[CHANGELOG.md](CHANGELOG.md)**: Detailed version history and release notes
 - **[INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)**: Integration testing guide with Docker setup
-- **[RELEASE_v0.1.0.md](RELEASE_v0.1.0.md)**: Complete v0.1.0 release notes
+- **[releases/v0.9.0.md](releases/v0.9.0.md)**: Latest v0.9.0 release notes ([all releases](releases/))
 
 ### API Documentation
 

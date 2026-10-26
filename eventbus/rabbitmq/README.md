@@ -1,6 +1,6 @@
 # rabbitmq (`eventbus/rabbitmq`)
 
-`eventbus/rabbitmq` provides a production-grade RabbitMQ (AMQP 0-9-1) streaming broker adapter for `gokit/eventbus`. It implements [`eventbus.Bus`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L75), enabling seamless integration with all `eventbus` middlewares (Retries, Recovery, DLQ, OpenTelemetry tracing) and the Transactional Outbox pattern.
+`eventbus/rabbitmq` provides a production-grade RabbitMQ (AMQP 0-9-1) streaming broker adapter for `gokit/eventbus`. It implements [`eventbus.Bus`](../eventbus.go#L75), enabling seamless integration with all `eventbus` middlewares (Retries, Recovery, DLQ, OpenTelemetry tracing) and the Transactional Outbox pattern.
 
 Built on the official [`github.com/rabbitmq/amqp091-go`](https://github.com/rabbitmq/amqp091-go) client.
 
@@ -54,19 +54,19 @@ Built on the official [`github.com/rabbitmq/amqp091-go`](https://github.com/rabb
 
 ## Features
 
-- **Standard AMQP 0-9-1 Contract**: Implements [`eventbus.Bus`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L75) (`Publish`, `Subscribe`, `Close`), allowing microservices to switch between In-Memory, Redis Streams, Kafka, and RabbitMQ without rewriting domain handlers.
+- **Standard AMQP 0-9-1 Contract**: Implements [`eventbus.Bus`](../eventbus.go#L75) (`Publish`, `Subscribe`, `Close`), allowing microservices to switch between In-Memory, Redis Streams, Kafka, and RabbitMQ without rewriting domain handlers.
 - **Topic Exchange Wildcard Routing**: Native AMQP topic routing:
   - Exact: `orders.created`
   - Single-segment wildcard (`*`): `orders.*` matches `orders.created` and `orders.cancelled`
   - Multi-segment wildcard (`#`): `orders.#` matches `orders.v1.us.created`
-- **Competing Consumers Pattern**: Configure [`WithConsumerGroup("group-name")`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L40) to bind a shared durable queue across multiple service replicas for load balancing.
+- **Competing Consumers Pattern**: Configure [`WithConsumerGroup("group-name")`](../eventbus.go#L40) to bind a shared durable queue across multiple service replicas for load balancing.
 - **Broadcast / Fan-out**: Omit `ConsumerGroup` to create an exclusive, auto-delete queue for broadcast semantics.
-- **QoS & Prefetch Control**: [`WithPrefetchCount(n)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/rabbitmq/options.go#L83) prevents slow consumers from being overwhelmed by unacknowledged messages.
+- **QoS & Prefetch Control**: [`WithPrefetchCount(n)`](options.go#L83) prevents slow consumers from being overwhelmed by unacknowledged messages.
 - **Reliable Acknowledgments**:
   - `WithAutoAck(true)`: Automatically sends `Ack(false)` when the handler succeeds.
   - Automatically sends `Nack(false, requeue)` when the handler fails, ensuring zero message loss.
-- **Multi-Worker Concurrency**: [`WithConcurrency(N)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L60) spawns $N$ concurrent worker goroutines draining the delivery channel.
-- **Security & TLS**: Native AMQPS encryption support via [`WithTLS(cfg)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/rabbitmq/options.go#L99).
+- **Multi-Worker Concurrency**: [`WithConcurrency(N)`](../eventbus.go#L60) spawns $N$ concurrent worker goroutines draining the delivery channel.
+- **Security & TLS**: Native AMQPS encryption support via [`WithTLS(cfg)`](options.go#L99).
 
 ---
 

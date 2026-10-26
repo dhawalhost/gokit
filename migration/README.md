@@ -1,6 +1,6 @@
 # migration
 
-`migration` provides a standalone, driver-agnostic, embed-friendly database schema migration engine for Go applications. It tracks schema versions in a dedicated tracking table (`schema_migrations`), detects dirty migrations, executes transactional and non-transactional DDL, and natively integrates with [`distlock.Locker`](file:///Users/dhawal.dyavanpalli/go/src/gokit/distlock) to eliminate concurrency race conditions during multi-replica container rollouts.
+`migration` provides a standalone, driver-agnostic, embed-friendly database schema migration engine for Go applications. It tracks schema versions in a dedicated tracking table (`schema_migrations`), detects dirty migrations, executes transactional and non-transactional DDL, and natively integrates with [`distlock.Locker`](../distlock/README.md) to eliminate concurrency race conditions during multi-replica container rollouts.
 
 ---
 
@@ -40,20 +40,20 @@
 ## Features
 
 - **Driver & Storage Agnostic**:
-  - Works with standard library [`*sql.DB`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/migrator.go#L106) (`PostgreSQL`, `MySQL`, `SQLite`, `CockroachDB`, `MariaDB`).
-  - Abstract [`DB`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/migrator.go#L35) interface allows pure in-memory testing without spin-up delays or external containers.
+  - Works with standard library [`*sql.DB`](migrator.go#L106) (`PostgreSQL`, `MySQL`, `SQLite`, `CockroachDB`, `MariaDB`).
+  - Abstract [`DB`](migrator.go#L35) interface allows pure in-memory testing without spin-up delays or external containers.
 - **Embedded & Filesystem Loading**:
-  - Load migrations effortlessly using Go's standard [`io/fs.FS`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/migration.go#L67) and `//go:embed`.
+  - Load migrations effortlessly using Go's standard [`io/fs.FS`](migration.go#L67) and `//go:embed`.
   - Automatic validation of file naming convention: `{version}_{name}.{up|down}.sql`.
 - **Atomic Transactional Execution**:
   - Executes each migration inside its own database transaction by default, rolling back automatically on failure.
-  - Option [`WithNoTransaction()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/options.go#L53) for databases or statements that prohibit transactions (such as `CREATE INDEX CONCURRENTLY` in PostgreSQL).
+  - Option [`WithNoTransaction()`](options.go#L53) for databases or statements that prohibit transactions (such as `CREATE INDEX CONCURRENTLY` in PostgreSQL).
 - **Dirty Migration State Tracking**:
   - Flags migrations as `dirty = true` before execution and clears the flag upon success.
-  - Halts execution immediately with [`ErrDirtyMigration`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/errors.go#L15) if a prior migration crashed midway, preventing schema corruption.
-  - Provides [`Force(version)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/migrator.go#L305) to cleanly reset migration state after manual intervention.
+  - Halts execution immediately with [`ErrDirtyMigration`](errors.go#L15) if a prior migration crashed midway, preventing schema corruption.
+  - Provides [`Force(version)`](migrator.go#L305) to cleanly reset migration state after manual intervention.
 - **Distributed Locking Integration**:
-  - Integrates with [`distlock.Locker`](file:///Users/dhawal.dyavanpalli/go/src/gokit/distlock) to ensure only a single pod/replica runs migrations during rolling Kubernetes deployments.
+  - Integrates with [`distlock.Locker`](../distlock/README.md) to ensure only a single pod/replica runs migrations during rolling Kubernetes deployments.
 
 ---
 
@@ -138,7 +138,7 @@ func main() {
 
 ## Distributed Locking (Kubernetes Pod Rollout)
 
-When multiple instances of a service start up concurrently in Kubernetes, use [`distlock.Locker`](file:///Users/dhawal.dyavanpalli/go/src/gokit/distlock) to serialize schema execution:
+When multiple instances of a service start up concurrently in Kubernetes, use [`distlock.Locker`](../distlock/README.md) to serialize schema execution:
 
 ```go
 locker := distlock.NewRedisLocker(redisClient)
@@ -207,6 +207,6 @@ err := migrator.Force(ctx, 2)
 
 | Option | Description | Default |
 |---|---|---|
-| [`WithTableName(name)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/options.go#L31) | Customizes schema version tracking table name | `"schema_migrations"` |
-| [`WithLocker(locker, key, ttl)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/options.go#L40) | Integrates distributed mutual exclusion | `nil` (no locking) |
-| [`WithNoTransaction()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/options.go#L53) | Runs DDL directly without wrapping in a transaction | `false` (transactional) |
+| [`WithTableName(name)`](options.go#L31) | Customizes schema version tracking table name | `"schema_migrations"` |
+| [`WithLocker(locker, key, ttl)`](options.go#L40) | Integrates distributed mutual exclusion | `nil` (no locking) |
+| [`WithNoTransaction()`](options.go#L53) | Runs DDL directly without wrapping in a transaction | `false` (transactional) |

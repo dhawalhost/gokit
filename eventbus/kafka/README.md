@@ -1,6 +1,6 @@
 # kafka (`eventbus/kafka`)
 
-`eventbus/kafka` provides a high-throughput, enterprise Apache Kafka & Redpanda streaming adapter for `gokit/eventbus`. It implements [`eventbus.Bus`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L75), enabling seamless integration with all `eventbus` middlewares (Retries, Recovery, DLQ, OpenTelemetry tracing) and the Transactional Outbox pattern.
+`eventbus/kafka` provides a high-throughput, enterprise Apache Kafka & Redpanda streaming adapter for `gokit/eventbus`. It implements [`eventbus.Bus`](../eventbus.go#L75), enabling seamless integration with all `eventbus` middlewares (Retries, Recovery, DLQ, OpenTelemetry tracing) and the Transactional Outbox pattern.
 
 Built on pure-Go [`github.com/segmentio/kafka-go`](https://github.com/segmentio/kafka-go), requiring zero CGO / librdkafka dependencies.
 
@@ -56,9 +56,9 @@ Built on pure-Go [`github.com/segmentio/kafka-go`](https://github.com/segmentio/
 ## Features
 
 - **Pure-Go Architecture**: Zero CGO dependencies, ultra-fast compilation, cross-platform compatibility.
-- **Universal Contract**: Implements [`eventbus.Bus`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L75) (`Publish`, `Subscribe`, `Close`), allowing microservices to switch between In-Memory, Redis Streams, RabbitMQ, and Kafka without rewriting domain handlers.
+- **Universal Contract**: Implements [`eventbus.Bus`](../eventbus.go#L75) (`Publish`, `Subscribe`, `Close`), allowing microservices to switch between In-Memory, Redis Streams, RabbitMQ, and Kafka without rewriting domain handlers.
 - **Consumer Group Support**: Distributed, load-balanced partition consumption across multiple service replicas.
-- **Multi-Worker Concurrency**: Set [`WithConcurrency(N)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventbus/eventbus.go#L60) to parallelize message processing per subscription.
+- **Multi-Worker Concurrency**: Set [`WithConcurrency(N)`](../eventbus.go#L60) to parallelize message processing per subscription.
 - **Batching & Linger**: Configurable batch sizes and batch timeouts (`WithBatchSize`, `WithBatchTimeout`) to amortize network I/O.
 - **Pluggable Partitioning**: Key-based hash partitioning via [`kafkago.Hash`](https://pkg.go.dev/github.com/segmentio/kafka-go#Hash), least-bytes, or custom balancers.
 - **Security & Reliability**: Native TLS (`WithTLS`), custom dialers (`WithDialer`), and configurable required acks (`WithRequiredAcks`).
