@@ -56,6 +56,7 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Multi-Tenant Data Bleed**           | Unscoped query or missing `WHERE tenant_id` leaks data across accounts      | [`multitenancy.TenantMiddleware`](file:///Users/dhawal.dyavanpalli/go/src/gokit/multitenancy/README.md) (PostgreSQL RLS session variables & GORM scopes)                                                   |
 | **Fleet Cascade Saturation / OOM**   | Influx of peak burst traffic exhausts server CPU and memory                | [`loadshed.Adaptive`](file:///Users/dhawal.dyavanpalli/go/src/gokit/loadshed/README.md) (Priority-aware traffic shedding protecting critical paths)                                                        |
 | **External Search Cluster Bloat**     | Multi-node Elasticsearch clusters add 50ms latency & thousands in cloud bills | [`search.NewMemoryIndex`](file:///Users/dhawal.dyavanpalli/go/src/gokit/search/README.md) (In-process sub-millisecond BM25 inverted index with zero external dependencies)                               |
+| **Network Egress Bill Shock & Delay** | 100k QPS returning 50 KB JSON responses saturates 40 Gbps NICs & racks up egress | [`compression.Middleware`](file:///Users/dhawal.dyavanpalli/go/src/gokit/compression/README.md) (Zero-allocation multi-codec compression reducing egress by 70–85% with Zstd & Brotli)                    |
 
 ---
 
@@ -549,6 +550,47 @@ func InitEnterpriseBrokers(ctx context.Context) (eventbus.Bus, eventbus.Bus, err
     }
 
     return kafkaBus, amqpBus, nil
+}
+```
+
+---
+
+### 13. Egress Bandwidth Optimization & Zero-GC Multi-Codec Compression
+
+```go
+package main
+
+import (
+    "net/http"
+
+    "github.com/dhawalhost/gokit/compression"
+    "github.com/dhawalhost/gokit/router"
+)
+
+func SetupCompressedGateway() http.Handler {
+    r := router.New()
+
+    // Multi-codec response compression + transparent request body decompression
+    r.Use(compression.Middleware(
+        // Avoid compressing tiny payloads (< 1KB) where header overhead inflates size
+        compression.WithMinLength(1024),
+        // Balance compression ratio vs CPU latency
+        compression.WithLevel(compression.LevelDefault),
+        // Server preference hierarchy: Zstd (Meta) > Brotli (Google) > Gzip > Deflate
+        compression.WithEncodings(
+            compression.EncodingZstandard,
+            compression.EncodingBrotli,
+            compression.EncodingGzip,
+        ),
+    ))
+
+    r.Get("/api/v1/catalog/export", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        // Large 500 KB JSON payload automatically compressed down to ~65 KB with zstd
+        w.Write(catalogExportJSON)
+    })
+
+    return r
 }
 ```
 
@@ -1198,6 +1240,33 @@ Simple TF-IDF scoring overvalues term repetition: a document mentioning "cache" 
 Instead of executing expensive leading-wildcard queries (`LIKE '%term%'` or regex scans), the search engine decomposes terms into character prefix grams during indexing:
 - Word `"microservice"` with `EdgeNGramTokenizer(2, 6)` indexes: `["mi", "mic", "micr", "micro", "micros"]`.
 - When a user types `"micr"` in a search box, a constant-time `TermQuery` matches the pre-computed edge n-gram, returning sub-millisecond typeahead suggestions.
+
+---
+
+## 📦 Multi-Codec Compression & Zero-GC Buffer Pooling (Zstandard, Brotli, Gzip)
+
+At massive enterprise scale ($100\text{k QPS}$), network bandwidth and serialization overhead can easily become the primary bottleneck and cost center.
+
+### 1. Hardware Reality & The Egress Calculation
+Consider an API serving $100\text{k QPS}$ where each JSON response averages $50\text{ KB}$:
+- **Uncompressed Egress**: $100{,}000 \times 50\text{ KB} = 5\text{ GB/sec} = 40\text{ Gbps}$ bandwidth!
+  - At AWS standard egress rate ($\$0.08/\text{GB}$), this generates **$\$1.44\text{ million/month}$** in network transit bills alone.
+  - Saturated 10G/40G NICs trigger packet drops and latency spikes.
+- **With Zstandard / Brotli Compression (75–85% reduction)**:
+  - Average payload size drops from $50\text{ KB} \to 8\text{ KB}$.
+  - Egress bandwidth collapses from **$40\text{ Gbps} \to 6.4\text{ Gbps}$** ($\$1.2\text{M}$ monthly cost savings).
+
+### 2. The Per-Request Allocation Trap
+Naive compression in Go (`gzip.NewWriter(w)`) allocates new compression state and hash tables on the heap **for every incoming HTTP request**:
+- A single Gzip encoder allocates $\sim 60\text{ KB} - 250\text{ KB}$.
+- At $50\text{k QPS}$, naive allocation generates **$12.5\text{ GB/sec}$ of short-lived garbage**, forcing the Go runtime into severe Stop-The-World (STW) garbage collection thrashing!
+- [`compression`](file:///Users/dhawal.dyavanpalli/go/src/gokit/compression/README.md) solves this by maintaining specialized `sync.Pool` instances for Gzip, Deflate, Brotli, and Zstandard. Writers are reset and recycled across requests, eliminating heap churn entirely.
+
+### 3. Codec Selection Matrix
+- **Zstandard (`zstd`)**: Best for **service-to-service internal RPCs** and cache payloads. Its decompression speed exceeds $1\text{ GB/sec}$ per core with near-zero latency degradation.
+- **Brotli (`br`)**: Best for **external web and mobile clients** where network transit over 4G/5G mobile links is the primary user-facing latency factor.
+- **Threshold Bypass (`MinLength`)**: Payloads smaller than $1\text{ KB}$ should never be compressed. Fixed headers and symbol tables in compressed formats often make payloads $< 500\text{ bytes}$ *larger* than uncompressed raw bytes.
+
 
 
 

@@ -46,6 +46,7 @@
 | `idgen` | UUID v4/v7, ULID, NanoID generation |
 | `bloomfilter` | In-memory and Redis-backed Bloom filter for probabilistic set membership |
 | `client` | Resilient outbound HTTP client with jittered exponential backoff, circuit breaker integration, tracing, and body replay |
+| `compression` | Multi-codec HTTP middleware and streaming compression (Zstandard, Brotli, Gzip, Deflate) with `sync.Pool` buffer recycling |
 | `distlock` | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
 | `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
 | `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |

@@ -11,6 +11,7 @@ test:
 		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
+		./compression/... \
 		./config/... \
 		./crypto/... \
 		./database/... \
@@ -60,6 +61,7 @@ test-race:
 		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
+		./compression/... \
 		./config/... \
 		./crypto/... \
 		./database/... \
@@ -109,6 +111,7 @@ cover:
 		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
+		./compression/... \
 		./config/... \
 		./crypto/... \
 		./database/... \
@@ -159,6 +162,7 @@ coverage test-coverage:
 		./cache/... \
 		./circuitbreaker/... \
 		./client/... \
+		./compression/... \
 		./config/... \
 		./crypto/... \
 		./database/... \
