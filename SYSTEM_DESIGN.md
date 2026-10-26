@@ -44,9 +44,9 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Inbound Webhook Replay Attacks**    | Stolen webhook payload re-submitted by malicious actor                     | [`webhook.NewVerifier`](webhook/README.md) (HMAC-SHA256 + tolerance window)                                                                                 |
 | **Unsafe Deployments / Bad Rollouts** | Buggy new feature deploys to 100% of traffic, causing outage               | [`featureflag.NewClient`](featureflag/README.md) (Sticky deterministic canary rollout)                                                                      |
 | **Scatter-Gather Tail Latency**      | Query fans out to 100 shards; p99 hits 63% tail                            | [`idgen.ExtractShardID`](idgen/README.md) (Time-sorted 64-bit ID with embedded routing)                                                                      |
-| **LSM Write Amplification Debt**      | 50 MB/s logical writes trigger 500 MB/s disk I/O; write stalls              | [`batcher.NewBatchAccumulator`](batcher/README.md) + [`jobqueue.NewBatcher`](jobqueue/README.md) (Amortize writes via linger) |
+| **LSM Write Amplification Debt**      | 50 MB/s logical writes trigger 500 MB/s disk I/O; write stalls              | [`batcher.New`](batcher/README.md) (Amortize writes via linger)                                              |
 | **Dual-Write Search Desync**          | App writes to DB and ES independently; crashes cause silent drift          | [`outbox.NewOutbox`](outbox/README.md) (CDC log tailing into search posting lists)                                                                           |
-| **Consumer Lag Explosion**            | Consumer falls behind; unbounded queue triggers OOM crash                  | [`jobqueue.NewBatcher`](jobqueue/README.md) (Configurable prefetch & backpressure watermarks)                                                                |
+| **Consumer Lag Explosion**            | Consumer falls behind; unbounded queue triggers OOM crash                  | [`batcher.New`](batcher/README.md) (Configurable prefetch & backpressure watermarks)                                                                        |
 | **Broker Redelivery Duplicates**      | Network timeout triggers retry; transaction executes twice                 | [`idempotency.New`](idempotency/README.md) (`INSERT ... ON CONFLICT DO NOTHING` / atomic token check)                                                        |
 | **N+1 Database Query Storm**          | GraphQL / REST resolvers fire 50 individual queries for 50 items          | [`batcher.NewDataLoader`](batcher/README.md) (Singleflight batch coalescing with in-memory TTL memoization)                                                  |
 | **BFF Aggregation Tail Drag**         | Slowest microservice blocks client screen on mobile fanout                 | [`gateway.ScatterGather`](gateway/README.md) (Parallel fanout with context deadlines & partial degradation)                                                 |
@@ -1116,7 +1116,7 @@ Total Multiplier: 5× - 10× Disk IOPS / Bandwidth
 2. **Remediations Before Adding Nodes**:
    - Switch TTL time-series tables to `TimeWindowCompactionStrategy` (TWCS).
    - Lower `tombstone_failure_threshold` and adjust schema to bucket hot partition keys by date/hour (e.g. `(tenant_id, bucket_day)`).
-   - Smooth write spikes by fronting writes with an amortizing batcher ([`jobqueue.NewBatcher`](jobqueue/README.md)).
+   - Smooth write spikes by fronting writes with an amortizing batcher ([`batcher.New`](batcher/README.md)).
 
 ---
 
@@ -1168,7 +1168,7 @@ Producers ──> [ Batcher (Linger: 50ms) ] ──> Broker Topic ──> [ Cons
 
 ### 1. Batching & Linger
 Writing individual 1 KB messages burns network packets and disk syncs. With a 50ms linger and 1,000 msgs/s per partition, each batch coalesces ~50 messages, boosting throughput by **$5\times - 20\times$** at the expense of a 50ms latency floor.
-- Implemented in `gokit` via [`jobqueue.NewBatcher`](jobqueue/README.md).
+- Implemented in `gokit` via [`batcher.New`](batcher/README.md).
 
 ### 2. Prefetch (In-Flight Credit) Sizing
 Prefetch determines how many unacknowledged messages a consumer holds:
