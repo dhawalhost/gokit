@@ -57,6 +57,8 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Fleet Cascade Saturation / OOM**   | Influx of peak burst traffic exhausts server CPU and memory                | [`loadshed.Adaptive`](file:///Users/dhawal.dyavanpalli/go/src/gokit/loadshed/README.md) (Priority-aware traffic shedding protecting critical paths)                                                        |
 | **External Search Cluster Bloat**     | Multi-node Elasticsearch clusters add 50ms latency & thousands in cloud bills | [`search.NewMemoryIndex`](file:///Users/dhawal.dyavanpalli/go/src/gokit/search/README.md) (In-process sub-millisecond BM25 inverted index with zero external dependencies)                               |
 | **Network Egress Bill Shock & Delay** | 100k QPS returning 50 KB JSON responses saturates 40 Gbps NICs & racks up egress | [`compression.Middleware`](file:///Users/dhawal.dyavanpalli/go/src/gokit/compression/README.md) (Zero-allocation multi-codec compression reducing egress by 70–85% with Zstd & Brotli)                    |
+| **Audit Loss & Concurrent State Corruption** | Destructive in-place updates overwrite ledger history or cause lost updates | [`eventstore.NewRepository`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventstore/README.md) (Append-only immutable event streams with optimistic version locking & CQRS projection replay) |
+| **Session Hijacking & Fixation Attack** | Stolen cookie or fixed session token allows unauthorized account takeover | [`session.NewManager`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) (Subnet & UA fingerprint validation, session regeneration on login, sliding/absolute TTLs) |
 
 ---
 
@@ -588,6 +590,121 @@ func SetupCompressedGateway() http.Handler {
         w.Header().Set("Content-Type", "application/json")
         // Large 500 KB JSON payload automatically compressed down to ~65 KB with zstd
         w.Write(catalogExportJSON)
+    })
+
+    return r
+}
+```
+
+---
+
+### 14. Event-Sourced Banking Ledger & CQRS Projection Replay
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/dhawalhost/gokit/eventstore"
+)
+
+type BankAccount struct {
+    eventstore.BaseAggregate
+    Balance float64
+}
+
+func (a *BankAccount) AggregateType() string { return "BankAccount" }
+
+func (a *BankAccount) ApplyChange(evt eventstore.Event) {
+    if evt.Type == "MoneyDeposited" {
+        var d struct{ Amount float64 }
+        _ = evt.UnmarshalData(&d)
+        a.Balance += d.Amount
+    }
+}
+
+func ExecuteFinancialLedger(ctx context.Context) error {
+    store := eventstore.NewMemoryStore()
+    snapStore := eventstore.NewMemorySnapshotStore()
+
+    // Aggregate Repository with automatic snapshotting every 50 events
+    repo := eventstore.NewRepository[*BankAccount](
+        store,
+        func() *BankAccount { return &BankAccount{} },
+        eventstore.WithRepositorySnapshotStore(snapStore, eventstore.EveryNEvents(50)),
+    )
+
+    // Append-only events preserve complete auditability with optimistic concurrency
+    acc := &BankAccount{}
+    acc.SetID("acc-us-east-901")
+    evt, _ := eventstore.NewEvent(acc.AggregateID(), "MoneyDeposited", map[string]float64{"amount": 1000})
+    acc.TrackChange(acc, evt)
+    if err := repo.Save(ctx, acc); err != nil {
+        return err
+    }
+
+    // Load rehydrates state by reading snapshot + delta events in forward sequence
+    loaded, err := repo.Load(ctx, "acc-us-east-901")
+    if err != nil {
+        return err
+    }
+    fmt.Printf("Rehydrated balance: %.2f (Version: %d)\n", loaded.Balance, loaded.Version())
+    return nil
+}
+```
+
+---
+
+### 15. Zero-Trust Session Management & Anti-Hijacking Defense
+
+```go
+package main
+
+import (
+    "net/http"
+    "time"
+
+    "github.com/dhawalhost/gokit/router"
+    "github.com/dhawalhost/gokit/session"
+)
+
+func SetupSecureSessionGateway() http.Handler {
+    store := session.NewMemoryStore(time.Minute)
+
+    mgr, _ := session.NewManager(store,
+        session.WithCookieName("__Host-sid"),
+        session.WithCookieSecure(true),
+        session.WithCookieHTTPOnly(true),
+        session.WithCookieSameSite(http.SameSiteStrictMode),
+        session.WithCookiePath("/"),
+        session.WithIdleTimeout(15*time.Minute),      // 15m sliding inactivity window
+        session.WithAbsoluteTimeout(12*time.Hour),    // 12h maximum hard lifetime
+        session.WithAntiHijacking(true),              // Binds session to /24 IP subnet & User-Agent hash
+    )
+
+    r := router.New()
+    r.Use(mgr.Middleware())
+
+    r.Post("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+        s := session.FromContext(r.Context())
+        s.Set("authenticated", true)
+        s.Set("user_id", "usr_10294")
+        s.Set("tenant_id", "tenant_acme")
+        
+        // Critical: Re-keys session ID on privilege transition to neutralize session fixation attacks
+        s.Regenerate()
+        w.WriteHeader(http.StatusOK)
+    })
+
+    r.Get("/api/v1/user/me", func(w http.ResponseWriter, r *http.Request) {
+        s := session.FromContext(r.Context())
+        if !s.GetBool("authenticated") {
+            http.Error(w, "Unauthorized", http.StatusUnauthorized)
+            return
+        }
+        w.Write([]byte("User ID: " + s.GetString("user_id")))
     })
 
     return r
@@ -1266,6 +1383,113 @@ Naive compression in Go (`gzip.NewWriter(w)`) allocates new compression state an
 - **Zstandard (`zstd`)**: Best for **service-to-service internal RPCs** and cache payloads. Its decompression speed exceeds $1\text{ GB/sec}$ per core with near-zero latency degradation.
 - **Brotli (`br`)**: Best for **external web and mobile clients** where network transit over 4G/5G mobile links is the primary user-facing latency factor.
 - **Threshold Bypass (`MinLength`)**: Payloads smaller than $1\text{ KB}$ should never be compressed. Fixed headers and symbol tables in compressed formats often make payloads $< 500\text{ bytes}$ *larger* than uncompressed raw bytes.
+
+---
+
+## 📜 Event Sourcing & CQRS: Append-Only State, Time-Travel Auditability & Snapshotting
+
+Traditional CRUD architectures mutate records in place (`UPDATE accounts SET balance = balance + 100 WHERE id = 'acc-1'`). While straightforward, in-place mutation has fatal architectural flaws in mission-critical, regulated domains:
+- **Destructive State Loss:** Once overwritten, prior historical state is gone forever. You know the *current* balance, but cannot prove *how* or *why* it reached that number without relying on best-effort logs.
+- **Race Condition Vulnerabilities:** Concurrent writes lead to lost update anomalies unless aggressive table-level locks or distributed mutexes are acquired.
+- **Audit Deficits:** External regulators (SOC2, HIPAA, PCI-DSS, FedRAMP) require mathematical, tamper-evident proof of every change that ever occurred.
+
+[`eventstore`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventstore/README.md) transforms domain persistence from destructive mutation into a pure, append-only ledger of immutable domain facts.
+
+```
+       Write Side (Commands)                             Read Side (Queries)
+   ┌───────────────────────────┐                     ┌───────────────────────────┐
+   │      DepositMoneyCommand  │                     │   GetAccountBalanceQuery  │
+   └─────────────┬─────────────┘                     └─────────────▲─────────────┘
+                 │                                                 │
+                 ▼                                                 │
+      AggregateRoot.Deposit()                        Fast Denormalized Read Model
+                 │                                       (PostgreSQL / Redis)
+                 ▼                                                 ▲
+      Repository[T].Save()                                         │
+    (Optimistic Lock Check)                                        │
+                 │                                                 │
+                 ▼                                                 │
+   ┌───────────────────────────┐                     ┌─────────────┴─────────────┐
+   │     Event Store Engine    │──(Live & Catchup)──>│   SubscriptionManager     │
+   │  (Append-Only Stream Log) │                     │   & Checkpoint Tracker    │
+   └───────────────────────────┘                     └───────────────────────────┘
+```
+
+### 1. The Core Event Sourcing Mechanics
+1. **Append-Only Streams:** Each domain entity (e.g. `BankAccount`, `Order`, `PatientChart`) has an isolated event stream identified by `StreamID`.
+2. **Deterministic Rehydration:** When loading an entity, the `Repository` fetches historical events in sequential order and folds them into the aggregate root via `ApplyChange(event)`. State is a function of history:
+   $$\text{State}_N = \sum_{i=1}^N \text{Event}_i$$
+3. **Optimistic Concurrency Control:** When committing new events, callers specify `ExpectedVersion`. If a concurrent transaction appended an event in the interim, the version check fails with `ErrConcurrencyConflict`, preventing lost updates without locking the database table.
+
+### 2. Snapshotting Strategy for Long-Lived Streams
+Replaying 50,000 events to reconstruct an aggregate that has existed for five years would introduce intolerable $O(N)$ read latency. [`eventstore.SnapshotStore`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventstore/README.md) solves this via periodic state snapshotting:
+- At configured intervals (e.g. `EveryNEvents(100)`), the aggregate's point-in-time state is serialized to the snapshot store.
+- Upon reload, the aggregate state is restored directly from snapshot at version $K$ ($O(1)$), and only delta events $K+1 \dots N$ are replayed. Rehydration latency remains $< 1\text{ms}$ regardless of stream lifetime.
+
+### 3. Asynchronous CQRS Projections & Checkpoints
+In Event Sourcing, write models are optimized solely for command validation and invariant enforcement, not querying. 
+- The [`SubscriptionManager`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventstore/README.md) fans out committed events to read-side `Projection` handlers.
+- Each projection maintains its own persistent `CheckpointStore` tracking the last successfully processed global position.
+- If a projection service crashes or new read models are deployed, projections simply catch up from their last checkpoint or replay from position 0 to retroactively generate new query tables.
+
+---
+
+## 🛡️ Distributed Session Management: Anti-Hijacking, Fixation Immunity & Sliding Windows
+
+Session management in distributed architectures is fraught with subtle security vulnerabilities and concurrency pitfalls:
+- **Session Fixation:** An attacker tricks a victim into using a known session identifier, waits for the user to log in, and retains access because the session ID was not rotated upon privilege elevation.
+- **Session Hijacking:** Stolen session tokens (via XSS, insecure network transit, or malicious proxies) are replayed by attackers from foreign IP addresses.
+- **Race Condition Header Flushing:** In Go's `net/http`, once `w.Write()` or `w.WriteHeader()` executes, response headers are flushed down the TCP socket. Any session modifications attempted afterwards fail to set the `Set-Cookie` header.
+
+[`session`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) addresses each of these threat vectors systematically.
+
+```
+Incoming Request
+      │
+      ▼
+Client Fingerprint = SHA-256(MaskedIP(/24) + "|" + UserAgent)
+      │
+      ▼
+Cookie Present? ───No───> Generate New Session (Cryptographically Secure 256-bit ID)
+      │
+     Yes
+      │
+      ▼
+Load Session from Store (Memory / Encrypted Cookie / Redis)
+      │
+      ├──> Absolute Timeout Exceeded (> 24h)?  ───Yes───> Revoke & Re-issue
+      │
+      ├──> Idle Timeout Exceeded (> 30m)?      ───Yes───> Revoke & Re-issue
+      │
+      └──> Fingerprint Mismatch?               ───Yes───> 403 Forbidden (ErrHijackingDetected)
+      │
+      ▼
+Inject into Request Context
+      │
+      ▼
+Handler Execution (Get / Set / Flash / Regenerate / Destroy)
+      │
+      ▼
+sessionResponseWriter.WriteHeader() / Write()
+(Intercepts header write: Flushes Set-Cookie BEFORE status code transmission)
+```
+
+### 1. Subnet-Tolerant Anti-Hijacking Fingerprinting
+Naively binding sessions to exact client IP addresses causes frequent session dropouts on mobile devices as users roam between cellular towers and Wi-Fi networks:
+- **Subnet Masking:** [`session.DefaultFingerprint`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) applies a `/24` CIDR mask to IPv4 addresses (or `/48` to IPv6), masking individual host variations while anchoring the session to the client's local autonomous routing domain.
+- Combined with the normalized `User-Agent` string into a SHA-256 digest, this detects unauthorized cross-regional or cross-device token replaying without annoying legitimate roaming mobile users.
+
+### 2. Session Fixation Defense via Token Regeneration
+Whenever a user's authorization tier changes (e.g., anonymous guest $\to$ authenticated user, or regular user $\to$ sudo/admin):
+- Calling [`session.Regenerate()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) atomically destroys the previous session ID in the storage backend and allocates a fresh 256-bit cryptographically random token (`crypto/rand`), moving existing session payloads into the new token.
+- Even if an attacker seeded the original cookie, their access is severed the instant the victim authenticates.
+
+### 3. Early Cookie Header Interception
+Go's standard `http.ResponseWriter` emits headers immediately when `WriteHeader` is invoked:
+- The [`session.Manager.Middleware()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) wraps `http.ResponseWriter` with an internal `sessionResponseWriter`.
+- The first call to `WriteHeader()` or `Write()` intercepts the execution pipeline, persists modified session state to the store, and appends `Set-Cookie` (`HttpOnly`, `SameSite=Lax/Strict`, `Secure`, `Partitioned`) *before* delegating the status code write down to the underlying socket.
+
+
 
 
 

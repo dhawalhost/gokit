@@ -51,6 +51,7 @@
 | `audit` | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
 | `outbox` | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
 | `eventbus` | Resilient Pub/Sub event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
+| `eventstore` | Event Sourcing & CQRS engine with append-only streams, optimistic concurrency, snapshotting, and projection catch-up |
 | `jobqueue` | Asynchronous background task runner with priority scheduling, worker pools, delayed jobs, and retry backoff |
 | `featureflag` | OpenFeature-compatible feature flag engine with deterministic canary rollouts and contextual targeting |
 | `webhook` | Inbound HMAC-SHA256 signature verification & outbound resilient webhook dispatcher with retries |
@@ -68,6 +69,7 @@
 | `secrets` | Dynamic secret management, leak-proof memory zeroing, multi-provider fallback, and TTL caching |
 | `migration` | Standalone schema migration engine with embed.FS loading, dirty tracking, transactional DDL, and `distlock` integration |
 | `search` | Embedded in-memory full-text search engine with BM25 ranking, tokenizers, n-grams, fuzzy matching, and boolean queries |
+| `session` | Distributed HTTP session manager with anti-hijacking validation, sliding TTLs, flash data, and encrypted cookie stores |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---

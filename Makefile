@@ -18,6 +18,7 @@ test:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./eventstore/... \
 		./featureflag/... \
 		./gateway/... \
 		./grpc/... \
@@ -41,6 +42,7 @@ test:
 		./saga/... \
 		./scheduler/... \
 		./search/... \
+		./session/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
@@ -68,6 +70,7 @@ test-race:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./eventstore/... \
 		./featureflag/... \
 		./gateway/... \
 		./grpc/... \
@@ -91,6 +94,7 @@ test-race:
 		./saga/... \
 		./scheduler/... \
 		./search/... \
+		./session/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
@@ -118,6 +122,7 @@ cover:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./eventstore/... \
 		./featureflag/... \
 		./gateway/... \
 		./grpc/... \
@@ -141,6 +146,7 @@ cover:
 		./saga/... \
 		./scheduler/... \
 		./search/... \
+		./session/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
@@ -169,6 +175,7 @@ coverage test-coverage:
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
+		./eventstore/... \
 		./featureflag/... \
 		./gateway/... \
 		./grpc/... \
@@ -192,6 +199,7 @@ coverage test-coverage:
 		./saga/... \
 		./scheduler/... \
 		./search/... \
+		./session/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
