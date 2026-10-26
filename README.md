@@ -35,6 +35,7 @@
 | `logger` | Zap wrapper with automatic sensitive key masking (`********`), global singleton, and context helpers |
 | `config` | Viper-backed config loader with hot-reloading (`NewManager`), secret auto-masking, `APP_*` env prefix, and YAML/.env support |
 | `database` | GORM v2 + pgxpool combined `DB` struct with pool management and migration helpers |
+| `diagnostics` | Runtime memory watchdog, automated watermark heap dumping, goroutine leak detector, and authenticated pprof |
 | `cache` | `Cache` interface with Redis backend |
 | `crypto` | AES-256-GCM, bcrypt, constant-time HMAC, JWT HS256/RS256, timing-safe PKCE, secure random |
 | `errors` | Structured `AppError` with HTTP status codes, safe `Wrap` error encapsulation, and JSON writing |

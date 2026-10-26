@@ -59,6 +59,7 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Network Egress Bill Shock & Delay** | 100k QPS returning 50 KB JSON responses saturates 40 Gbps NICs & racks up egress | [`compression.Middleware`](file:///Users/dhawal.dyavanpalli/go/src/gokit/compression/README.md) (Zero-allocation multi-codec compression reducing egress by 70–85% with Zstd & Brotli)                    |
 | **Audit Loss & Concurrent State Corruption** | Destructive in-place updates overwrite ledger history or cause lost updates | [`eventstore.NewRepository`](file:///Users/dhawal.dyavanpalli/go/src/gokit/eventstore/README.md) (Append-only immutable event streams with optimistic version locking & CQRS projection replay) |
 | **Session Hijacking & Fixation Attack** | Stolen cookie or fixed session token allows unauthorized account takeover | [`session.NewManager`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) (Subnet & UA fingerprint validation, session regeneration on login, sliding/absolute TTLs) |
+| **Silent OOM Kills & Goroutine Runaway** | Unmonitored memory leaks trigger Linux kernel SIGKILL 137 without stack traces | [`diagnostics.NewMemoryWatchdog`](file:///Users/dhawal.dyavanpalli/go/src/gokit/diagnostics/README.md) (Automated watermark heap dumping with cooldown, goroutine leak analyzer & token-secured pprof) |
 
 ---
 
@@ -708,6 +709,48 @@ func SetupSecureSessionGateway() http.Handler {
     })
 
     return r
+}
+```
+
+---
+
+### 16. Autonomous Memory Pressure Watchdog & Authenticated Diagnostic Profiling
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "net/http"
+    "time"
+
+    "github.com/dhawalhost/gokit/diagnostics"
+)
+
+func SetupProductionDiagnostics(ctx context.Context) http.Handler {
+    // 1. Autonomous Memory Pressure Watchdog
+    // Dumps heap profile if HeapAlloc crosses 1.5 GB before Linux cgroup OOM killer strikes
+    watchdog := diagnostics.NewMemoryWatchdog(
+        diagnostics.WithMaxHeapAlloc(1500*1024*1024),
+        diagnostics.WithCooldown(5*time.Minute),      // Rate limits dumps to preserve disk IOPS
+        diagnostics.WithDumpDir("/var/log/app/heaps"),
+        diagnostics.WithWatermarkHook(func(s diagnostics.MemorySummary, dumpPath string) {
+            log.Printf("ALERT: Heap watermark breached: %d MB. Profile written to %s\n",
+                s.HeapAlloc/(1024*1024), dumpPath)
+        }),
+    )
+    _ = watchdog.Start(ctx)
+
+    // 2. Zero-Trust Diagnostic Server: Pprof & Runtime summary protected by Bearer token & Subnet allowlist
+    diagHandler := diagnostics.NewHandler(
+        diagnostics.WithBearerToken("sec-ops-token-884"),
+        diagnostics.WithAllowedCIDRs("10.0.0.0/8", "127.0.0.1/32"),
+        diagnostics.WithPathPrefix("/debug"),
+        diagnostics.WithWatchdog(watchdog),
+    )
+
+    return diagHandler
 }
 ```
 
@@ -1488,6 +1531,58 @@ Whenever a user's authorization tier changes (e.g., anonymous guest $\to$ authen
 Go's standard `http.ResponseWriter` emits headers immediately when `WriteHeader` is invoked:
 - The [`session.Manager.Middleware()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/session/README.md) wraps `http.ResponseWriter` with an internal `sessionResponseWriter`.
 - The first call to `WriteHeader()` or `Write()` intercepts the execution pipeline, persists modified session state to the store, and appends `Set-Cookie` (`HttpOnly`, `SameSite=Lax/Strict`, `Secure`, `Partitioned`) *before* delegating the status code write down to the underlying socket.
+
+---
+
+## 🩺 Autonomous Runtime Diagnostics: Memory Watermarks, Goroutine Leak Tracking & Zero-Trust Profiling
+
+In high-concurrency production Go microservices, memory leaks and runaway goroutines represent the most insidious failure modes:
+- **Silent OOM Kills:** When a container breaches its Linux cgroup memory limit, the Linux kernel kernel Out-Of-Memory (OOM) killer abruptly terminates the process with `SIGKILL` (exit status 137). No panic is triggered, no Go deferred cleanups execute, and no stack trace is written to logs.
+- **Runaway Goroutine Leaks:** Goroutines abandoned on blocked channel sends, unread network connections, or uncancelled contexts accumulate silently, bloating heap allocations and consuming CPU scheduler slices until node exhaustion.
+- **Public Profiler Exposure:** Mounting default `net/http/pprof` endpoints without strict authentication exposes decrypted memory heaps, secret keys, and customer data to external port scanners.
+
+[`diagnostics`](file:///Users/dhawal.dyavanpalli/go/src/gokit/diagnostics/README.md) resolves each failure scenario through proactive automation and defensive design.
+
+```
+                      Runtime Memory Monitoring Loop
+                      ──────────────────────────────
+                        ticker := 5 * time.Second
+                                    │
+                                    ▼
+                         runtime.ReadMemStats()
+                                    │
+              ┌─────────────────────┴─────────────────────┐
+              ▼                                           ▼
+       HeapAlloc < Limit                           HeapAlloc >= Limit
+      (Continue Polling)                                  │
+                                                          ▼
+                                              Cooldown Window Active?
+                                             ┌────────────┴────────────┐
+                                             ▼                         ▼
+                                            Yes                        No
+                                        (Suppressed)                   │
+                                                                       ▼
+                                                          Capture Automated Heap Dump
+                                                        (Write .pprof File & Alert Hook)
+```
+
+### 1. Watermark-Triggered Heap Snapshots
+Instead of post-mortem guessing after a container has already died:
+- The [`diagnostics.MemoryWatchdog`](file:///Users/dhawal.dyavanpalli/go/src/gokit/diagnostics/README.md) evaluates `runtime.MemStats` on an active interval.
+- When `HeapAlloc` breaches the configured safety threshold (e.g. 80% of container cgroup memory), it proactively executes `pprof.WriteHeapProfile()` to disk before the kernel kills the pod.
+- **Disk IOPS Protection:** Under continuous memory saturation, taking dumps every 5 seconds would exhaust disk IOPS and fill the filesystem. The watchdog enforces a rate-limiting cooldown window (e.g. 3–5 minutes) between dumps.
+
+### 2. Goroutine Leak Detection & Stack Diffing
+Detecting leaks during development, CI/CD integration tests, and staging:
+- [`diagnostics.CaptureGoroutines()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/diagnostics/README.md) captures all active goroutine IDs and parses their full stack traces.
+- After running a concurrent workload, [`diagnostics.VerifyNoGoroutineLeak()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/diagnostics/README.md) computes the set difference between current and baseline goroutines.
+- **Settlement Grace Period:** Asynchronous workers may take a few milliseconds to notice context cancellation. The detector applies a configurable polling settlement grace period (`WithSettleTimeout`) and pattern filtering (`WithIgnoredPatterns`) to ignore runtime internals while catching true application worker leaks.
+
+### 3. Zero-Trust Authenticated Diagnostic Routing
+Access to `/debug/pprof/*` endpoints must be restricted:
+- [`diagnostics.NewHandler()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/diagnostics/README.md) requires constant-time Bearer token verification (`crypto/subtle.ConstantTimeCompare`) on all incoming diagnostic requests.
+- CIDR subnet allowlisting enforces that only trusted internal management networks (e.g. VPC bastion `10.0.0.0/8` or local loopback `127.0.0.1/32`) can probe profiler endpoints, eliminating unauthorized reconnaissance.
+
 
 
 

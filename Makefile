@@ -15,6 +15,7 @@ test:
 		./config/... \
 		./crypto/... \
 		./database/... \
+		./diagnostics/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
@@ -67,6 +68,7 @@ test-race:
 		./config/... \
 		./crypto/... \
 		./database/... \
+		./diagnostics/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
@@ -119,6 +121,7 @@ cover:
 		./config/... \
 		./crypto/... \
 		./database/... \
+		./diagnostics/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
@@ -172,6 +175,7 @@ coverage test-coverage:
 		./config/... \
 		./crypto/... \
 		./database/... \
+		./diagnostics/... \
 		./distlock/... \
 		./errors/... \
 		./eventbus/... \
