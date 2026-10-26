@@ -55,6 +55,7 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Invalid State Transition Race**     | Order cancelled after shipment due to concurrent status updates            | [`workflow.NewEngine`](file:///Users/dhawal.dyavanpalli/go/src/gokit/workflow/README.md) (FSM transition guards & optimistic version locking)                                                              |
 | **Multi-Tenant Data Bleed**           | Unscoped query or missing `WHERE tenant_id` leaks data across accounts      | [`multitenancy.TenantMiddleware`](file:///Users/dhawal.dyavanpalli/go/src/gokit/multitenancy/README.md) (PostgreSQL RLS session variables & GORM scopes)                                                   |
 | **Fleet Cascade Saturation / OOM**   | Influx of peak burst traffic exhausts server CPU and memory                | [`loadshed.Adaptive`](file:///Users/dhawal.dyavanpalli/go/src/gokit/loadshed/README.md) (Priority-aware traffic shedding protecting critical paths)                                                        |
+| **External Search Cluster Bloat**     | Multi-node Elasticsearch clusters add 50ms latency & thousands in cloud bills | [`search.NewMemoryIndex`](file:///Users/dhawal.dyavanpalli/go/src/gokit/search/README.md) (In-process sub-millisecond BM25 inverted index with zero external dependencies)                               |
 
 ---
 
@@ -437,6 +438,117 @@ func SetupOrderWorkflow() (*workflow.Engine[OrderContext], error) {
     }
 
     return engine, nil
+}
+```
+
+---
+
+### 11. Sub-Millisecond In-Memory Search & Typeahead Autocomplete
+
+```go
+package main
+
+import (
+    "context"
+
+    "github.com/dhawalhost/gokit/search"
+)
+
+type Product struct {
+    ID          string
+    Title       string
+    Description string
+    Category    string
+    Price       float64
+}
+
+func SetupCatalogSearch(ctx context.Context, products []*Product) (search.Index, error) {
+    // Configures edge n-grams for instant typeahead prefix matching
+    cfg := search.IndexConfig{
+        DefaultAnalyzer: search.NewStandardAnalyzer(),
+        FieldAnalyzers: map[string]*search.Analyzer{
+            "suggest": search.NewAutocompleteAnalyzer(2, 6),
+        },
+        K1: 1.2,
+        B:  0.75,
+    }
+    idx := search.NewMemoryIndex(cfg)
+
+    // Batch index products with text fields, category tags, and numeric prices
+    var docs []*search.Document
+    for _, p := range products {
+        doc := search.NewDocument(p.ID).
+            SetField("title", p.Title).
+            SetField("content", p.Description).
+            SetField("suggest", p.Title).
+            SetNumeric("price", p.Price).
+            AddTag(p.Category)
+        docs = append(docs, doc)
+    }
+    if err := idx.IndexBatch(ctx, docs); err != nil {
+        return nil, err
+    }
+
+    return idx, nil
+}
+
+func SearchCatalog(ctx context.Context, idx search.Index, queryStr, category string, maxPrice float64) (*search.Result, error) {
+    // Combines BM25 multi-field matching with strict category filter and price range
+    q := search.NewBoolQuery().
+        MustClause(
+            search.NewMultiMatchQuery(queryStr, "title", "content").
+                SetFieldBoost("title", 2.5),
+        ).
+        FilterClause(
+            search.NewTagQuery(category),
+            search.NewRangeQuery("price").LessThanOrEqual(maxPrice),
+        )
+
+    return idx.Search(ctx, search.Request{
+        Query:           q,
+        Limit:           20,
+        HighlightFields: []string{"title", "content"},
+    })
+}
+```
+
+---
+
+### 12. Enterprise Streaming Broker Routing (Kafka & RabbitMQ)
+
+```go
+package main
+
+import (
+    "context"
+
+    "github.com/dhawalhost/gokit/eventbus"
+    "github.com/dhawalhost/gokit/eventbus/kafka"
+    "github.com/dhawalhost/gokit/eventbus/rabbitmq"
+)
+
+func InitEnterpriseBrokers(ctx context.Context) (eventbus.Bus, eventbus.Bus, error) {
+    // 1. High-throughput Kafka bus with deterministic partition key routing & compression
+    kafkaBus, err := kafka.New(
+        kafka.WithBrokers("kafka-broker-1:9092", "kafka-broker-2:9092"),
+        kafka.WithClientID("order-fulfillment-service"),
+        kafka.WithBatchSize(100),
+    )
+    if err != nil {
+        return nil, nil, err
+    }
+
+    // 2. RabbitMQ AMQP bus with prefetch QoS and competing consumer groups
+    amqpBus, err := rabbitmq.New(
+        rabbitmq.WithURL("amqp://guest:guest@rabbitmq:5672/"),
+        rabbitmq.WithExchange("domain.events", "topic"),
+        rabbitmq.WithPrefetchCount(50),
+    )
+    if err != nil {
+        return nil, nil, err
+    }
+
+    return kafkaBus, amqpBus, nil
 }
 ```
 
@@ -1045,5 +1157,47 @@ Incoming Request (Header: X-Tenant-ID: tenant_acme)
 ### 2. Scoped Caching & Noisy Neighbors
 - **Cache Isolation:** Prefix all cache keys with tenant identifiers: `tenant:{id}:user:{uid}` to prevent cache collisions and cache poisoning across tenants.
 - **Fair Resource Sharing:** A single whale tenant firing 10,000 QPS must not exhaust server thread pools. [`bulkhead.NewTenantBulkhead`](file:///Users/dhawal.dyavanpalli/go/src/gokit/bulkhead/README.md) allocates per-tenant concurrency semaphores, isolating noisy tenants while guaranteeing headroom for smaller tenants.
+
+---
+
+## 🔍 In-Memory Full-Text Search: Inverted Index & Okapi BM25 Ranking
+
+When microservices need search capabilities (user directories, product catalogs, audit logs, tenant policies), teams often default to spinning up Elasticsearch or OpenSearch clusters. In many production architectures, this introduces unnecessary complexity:
+- **Operational Drag:** Cluster sizing, JVM heap tuning, garbage collection pauses, shard rebalancing, and snapshot management.
+- **Network Overhead:** Every search involves HTTP/REST serialization and 10–50ms network round-trips.
+- **Consistency Drifts:** Asynchronous ingestion creates lag where newly created records are invisible to users.
+
+[`search`](file:///Users/dhawal.dyavanpalli/go/src/gokit/search/README.md) solves this with an in-process, thread-safe inverted index delivering sub-millisecond query evaluation.
+
+```
+Incoming Document ──> Text Analysis Pipeline
+                       │ - Standard / Whitespace Tokenizer
+                       │ - Edge N-Gram Generator (Typeahead)
+                       │ - Lowercase + ASCII Folding (diacritics)
+                       │ - Stop-Word Removal & Stemmer
+                       ▼
+               Inverted Index Postings
+               Term: "cache" -> [Doc1: freq=3, pos=[0, 4, 12]], [Doc2: freq=1, pos=[2]]
+                       ▲
+                       │
+Query: MatchQuery("content", "cache invalidation")
+                       │
+             Okapi BM25 Ranking Engine
+               IDF(q) * (TF * (k1 + 1)) / (TF + k1 * (1 - b + b * (docLen / avgLen)))
+                       │
+                       ▼
+             Sorted Relevance Hits (p99 < 500µs)
+```
+
+### 1. Okapi BM25 vs Raw Term Frequency
+Simple TF-IDF scoring overvalues term repetition: a document mentioning "cache" 50 times shouldn't score 50 times higher than one mentioning it twice. 
+- **Okapi BM25** introduces an asymptotic term saturation curve controlled by parameter $k_1 \in [1.2, 2.0]$.
+- Document length normalization is controlled by parameter $b \in [0.5, 0.8]$: long documents mentioning a term randomly are penalized relative to short, focused documents.
+
+### 2. Live Typeahead via Character Edge N-Grams
+Instead of executing expensive leading-wildcard queries (`LIKE '%term%'` or regex scans), the search engine decomposes terms into character prefix grams during indexing:
+- Word `"microservice"` with `EdgeNGramTokenizer(2, 6)` indexes: `["mi", "mic", "micr", "micro", "micros"]`.
+- When a user types `"micr"` in a search box, a constant-time `TermQuery` matches the pre-computed edge n-gram, returning sub-millisecond typeahead suggestions.
+
 
 

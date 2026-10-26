@@ -39,6 +39,7 @@ test:
 		./router/... \
 		./saga/... \
 		./scheduler/... \
+		./search/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
@@ -87,6 +88,7 @@ test-race:
 		./router/... \
 		./saga/... \
 		./scheduler/... \
+		./search/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
@@ -135,6 +137,7 @@ cover:
 		./router/... \
 		./saga/... \
 		./scheduler/... \
+		./search/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
@@ -184,6 +187,7 @@ coverage test-coverage:
 		./router/... \
 		./saga/... \
 		./scheduler/... \
+		./search/... \
 		./secrets/... \
 		./server/... \
 		./storage/... \
