@@ -28,6 +28,7 @@ test:
 		./loadshed/... \
 		./logger/... \
 		./middleware/... \
+		./migration/... \
 		./multitenancy/... \
 		./notify/... \
 		./observability/... \
@@ -75,6 +76,7 @@ test-race:
 		./loadshed/... \
 		./logger/... \
 		./middleware/... \
+		./migration/... \
 		./multitenancy/... \
 		./notify/... \
 		./observability/... \
@@ -122,6 +124,7 @@ cover:
 		./loadshed/... \
 		./logger/... \
 		./middleware/... \
+		./migration/... \
 		./multitenancy/... \
 		./notify/... \
 		./observability/... \
@@ -170,6 +173,7 @@ coverage test-coverage:
 		./loadshed/... \
 		./logger/... \
 		./middleware/... \
+		./migration/... \
 		./multitenancy/... \
 		./notify/... \
 		./observability/... \

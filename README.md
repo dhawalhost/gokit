@@ -65,6 +65,7 @@
 | `batcher` | Micro-batching write buffer and request-coalescing DataLoader with memoization cache |
 | `gateway` | API Gateway reverse proxy, multi-strategy load balancing, and parallel scatter-gather BFF aggregator |
 | `secrets` | Dynamic secret management, leak-proof memory zeroing, multi-provider fallback, and TTL caching |
+| `migration` | Standalone schema migration engine with embed.FS loading, dirty tracking, transactional DDL, and `distlock` integration |
 | `testutil` | Test helpers: logger, recorder, request builder, response assertions |
 
 ---

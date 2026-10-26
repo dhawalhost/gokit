@@ -44,10 +44,17 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Inbound Webhook Replay Attacks**    | Stolen webhook payload re-submitted by malicious actor                     | [`webhook.NewVerifier`](file:///Users/dhawal.dyavanpalli/go/src/gokit/webhook/README.md) (HMAC-SHA256 + tolerance window)                                                                                 |
 | **Unsafe Deployments / Bad Rollouts** | Buggy new feature deploys to 100% of traffic, causing outage               | [`featureflag.NewClient`](file:///Users/dhawal.dyavanpalli/go/src/gokit/featureflag/README.md) (Sticky deterministic canary rollout)                                                                      |
 | **Scatter-Gather Tail Latency**      | Query fans out to 100 shards; p99 hits 63% tail                            | [`idgen.ExtractShardID`](file:///Users/dhawal.dyavanpalli/go/src/gokit/idgen/README.md) (Time-sorted 64-bit ID with embedded routing)                                                                      |
-| **LSM Write Amplification Debt**      | 50 MB/s logical writes trigger 500 MB/s disk I/O; write stalls              | [`jobqueue.NewBatcher`](file:///Users/dhawal.dyavanpalli/go/src/gokit/jobqueue/README.md) (Amortize disk/network writes via batching & linger)                                                             |
+| **LSM Write Amplification Debt**      | 50 MB/s logical writes trigger 500 MB/s disk I/O; write stalls              | [`batcher.NewBatchAccumulator`](file:///Users/dhawal.dyavanpalli/go/src/gokit/batcher/README.md) + [`jobqueue.NewBatcher`](file:///Users/dhawal.dyavanpalli/go/src/gokit/jobqueue/README.md) (Amortize writes via linger) |
 | **Dual-Write Search Desync**          | App writes to DB and ES independently; crashes cause silent drift          | [`outbox.NewOutbox`](file:///Users/dhawal.dyavanpalli/go/src/gokit/outbox/README.md) (CDC log tailing into search posting lists)                                                                           |
 | **Consumer Lag Explosion**            | Consumer falls behind; unbounded queue triggers OOM crash                  | [`jobqueue.NewBatcher`](file:///Users/dhawal.dyavanpalli/go/src/gokit/jobqueue/README.md) (Configurable prefetch & backpressure watermarks)                                                                |
 | **Broker Redelivery Duplicates**      | Network timeout triggers retry; transaction executes twice                 | [`idempotency.New`](file:///Users/dhawal.dyavanpalli/go/src/gokit/idempotency/README.md) (`INSERT ... ON CONFLICT DO NOTHING` / atomic token check)                                                        |
+| **N+1 Database Query Storm**          | GraphQL / REST resolvers fire 50 individual queries for 50 items          | [`batcher.NewDataLoader`](file:///Users/dhawal.dyavanpalli/go/src/gokit/batcher/README.md) (Singleflight batch coalescing with in-memory TTL memoization)                                                  |
+| **BFF Aggregation Tail Drag**         | Slowest microservice blocks client screen on mobile fanout                 | [`gateway.ScatterGather`](file:///Users/dhawal.dyavanpalli/go/src/gokit/gateway/README.md) (Parallel fanout with context deadlines & partial degradation)                                                 |
+| **Multi-Replica Migration Race**      | 20 Kubernetes pods run DDL concurrently on deploy, corrupting schema       | [`migration.NewSQL`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/README.md) + [`distlock`](file:///Users/dhawal.dyavanpalli/go/src/gokit/distlock/README.md) (Distributed lock mutex)         |
+| **Credential & Key Log Leakage**      | API keys, secrets, or passwords logged in crash dumps or tracing spans     | [`secrets.NewSecret`](file:///Users/dhawal.dyavanpalli/go/src/gokit/secrets/README.md) (`[REDACTED]` stringer & leak-proof memory zeroing)                                                                 |
+| **Invalid State Transition Race**     | Order cancelled after shipment due to concurrent status updates            | [`workflow.NewEngine`](file:///Users/dhawal.dyavanpalli/go/src/gokit/workflow/README.md) (FSM transition guards & optimistic version locking)                                                              |
+| **Multi-Tenant Data Bleed**           | Unscoped query or missing `WHERE tenant_id` leaks data across accounts      | [`multitenancy.TenantMiddleware`](file:///Users/dhawal.dyavanpalli/go/src/gokit/multitenancy/README.md) (PostgreSQL RLS session variables & GORM scopes)                                                   |
+| **Fleet Cascade Saturation / OOM**   | Influx of peak burst traffic exhausts server CPU and memory                | [`loadshed.Adaptive`](file:///Users/dhawal.dyavanpalli/go/src/gokit/loadshed/README.md) (Priority-aware traffic shedding protecting critical paths)                                                        |
 
 ---
 
@@ -185,6 +192,251 @@ func ProcessOrder(ctx context.Context, orderID string, amount int64) (*saga.Exec
     }
 
     return result, nil
+}
+```
+
+---
+
+### 5. Eliminating N+1 Query Storms via DataLoader (GraphQL / REST)
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/batcher"
+)
+
+type User struct {
+    ID   string
+    Name string
+}
+
+func SetupUserDataLoader(db Database) *batcher.DataLoader[string, *User] {
+    // Coalesces individual user lookups arriving within 10ms into a single batch SELECT query
+    return batcher.NewDataLoader(
+        func(ctx context.Context, keys []string) (map[string]*User, error) {
+            // SELECT * FROM users WHERE id IN ($1, $2, ...)
+            return db.BatchFetchUsers(ctx, keys)
+        },
+        batcher.WithDataLoaderMaxBatchSize(100),
+        batcher.WithDataLoaderLinger(10*time.Millisecond),
+        batcher.WithDataLoaderTTL(5*time.Minute), // In-memory per-request/TTL memoization
+    )
+}
+
+func ResolveOrderAuthor(ctx context.Context, loader *batcher.DataLoader[string, *User], authorID string) (*User, error) {
+    // 50 concurrent GraphQL resolvers call Load() simultaneously -> exactly 1 DB query is fired!
+    return loader.Load(ctx, authorID)
+}
+```
+
+---
+
+### 6. High-Throughput Write Amortization via Batch Accumulator (Audit / Metrics)
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/batcher"
+)
+
+type LogEvent struct {
+    TenantID  string
+    Timestamp time.Time
+    Payload   []byte
+}
+
+func InitAuditBuffer(ctx context.Context, sink DatabaseSink) (*batcher.BatchAccumulator[LogEvent], error) {
+    // Amortizes 100,000 writes/sec into micro-batches of 500 items or 50ms flush windows
+    return batcher.NewBatchAccumulator[LogEvent](
+        500,
+        50*time.Millisecond,
+        func(ctx context.Context, batch []LogEvent) error {
+            return sink.BulkInsert(ctx, batch)
+        },
+    )
+}
+```
+
+---
+
+### 7. Parallel BFF Scatter-Gather with Partial Degradation (Mobile Home Screen)
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/gateway"
+)
+
+type HomeScreenData struct {
+    Profile UserProfile
+    Feed    []FeedItem
+    Promo   *PromotionBanner
+}
+
+func FetchHomeScreen(ctx context.Context) (*HomeScreenData, error) {
+    // Fans out concurrently; enforces a strict 200ms p99 SLA budget across all 3 downstreams
+    taskProfile := gateway.Task[UserProfile]{
+        Name: "profile",
+        Fn:   func(c context.Context) (UserProfile, error) { return userClient.GetProfile(c) },
+    }
+    taskFeed := gateway.Task[[]FeedItem]{
+        Name: "feed",
+        Fn:   func(c context.Context) ([]FeedItem, error) { return feedClient.GetTimeline(c) },
+    }
+    taskPromo := gateway.Task[*PromotionBanner]{
+        Name: "promo",
+        Fn:   func(c context.Context) (*PromotionBanner, error) { return promoClient.GetActive(c) },
+    }
+
+    res := gateway.ScatterGather(ctx, 200*time.Millisecond, taskProfile, taskFeed, taskPromo)
+
+    // Non-critical promotion banner can fail or time out gracefully without failing home screen
+    data := &HomeScreenData{
+        Profile: gateway.MustGet(res, "profile").(UserProfile),
+        Feed:    gateway.MustGet(res, "feed").([]FeedItem),
+    }
+    if promoRes, ok := res["promo"]; ok && promoRes.Err == nil {
+        data.Promo = promoRes.Value.(*PromotionBanner)
+    }
+
+    return data, nil
+}
+```
+
+---
+
+### 8. Leak-Proof Dynamic Secrets & Rotation
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+
+    "github.com/dhawalhost/gokit/secrets"
+)
+
+func InitDatabaseCredentials(ctx context.Context) (*secrets.Secret, error) {
+    // Prioritized chain: Kubernetes Secret Volume -> Fallback to App Environment
+    chain := secrets.NewChainProvider(
+        secrets.NewFileProvider("/var/run/secrets/db"),
+        secrets.NewEnvProvider("APP_"),
+    )
+
+    // Cached with 10-minute TTL and background automated rotation worker
+    mgr, err := secrets.NewManager(chain,
+        secrets.WithTTL(10*time.Minute),
+        secrets.WithAutoRefresh(1*time.Minute),
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    // Secret prints "[REDACTED]" in logs/JSON, and Zero() securely scrubs memory
+    sec, err := mgr.Get(ctx, "db_password")
+    if err != nil {
+        return nil, err
+    }
+
+    return sec, nil
+}
+```
+
+---
+
+### 9. Multi-Replica Safe Database Schema Migrations
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "embed"
+    "time"
+
+    "github.com/dhawalhost/gokit/distlock"
+    "github.com/dhawalhost/gokit/migration"
+)
+
+//go:embed migrations/*.sql
+var migrationFS embed.FS
+
+func RunSafeMigrations(ctx context.Context, db *sql.DB, locker distlock.Locker) error {
+    migs, err := migration.LoadFromFS(migrationFS, "migrations")
+    if err != nil {
+        return err
+    }
+
+    // Mutual exclusion: Serializes migration across 30 Kubernetes pods spinning up simultaneously
+    migrator, err := migration.NewSQL(db, migs,
+        migration.WithTableName("schema_migrations"),
+        migration.WithLocker(locker, "lock:db:migration", 45*time.Second),
+    )
+    if err != nil {
+        return err
+    }
+
+    // Transactional DDL execution with dirty state detection
+    if err := migrator.Up(ctx); err != nil && err != migration.ErrNoChange {
+        return err
+    }
+
+    return nil
+}
+```
+
+---
+
+### 10. Concurrency-Safe Workflow State Machine (KYC / Order Pipeline)
+
+```go
+package main
+
+import (
+    "context"
+
+    "github.com/dhawalhost/gokit/workflow"
+)
+
+type OrderContext struct {
+    OrderID string
+    Amount  int64
+    Version int64 // Optimistic locking version
+}
+
+func SetupOrderWorkflow() (*workflow.Engine[OrderContext], error) {
+    engine := workflow.NewEngine[OrderContext](workflow.Config{
+        InitialState: "PENDING",
+    })
+
+    // Strict state transitions prevent invalid business logic (e.g., cancelling a delivered order)
+    err := engine.RegisterTransition(workflow.Transition[OrderContext]{
+        From:  "PENDING",
+        To:    "PAID",
+        Event: "PAYMENT_SUCCESS",
+        Guard: func(ctx context.Context, from, to workflow.State, data *OrderContext) bool {
+            return data.Amount > 0
+        },
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    return engine, nil
 }
 ```
 
@@ -594,4 +846,204 @@ Client ──[ POST /orders (Key: ord_123:pay) ]──> Gateway
      - The consumer queries the upstream payment gateway (Stripe/Adyen) using the client idempotency key.
      - The payment gateway returns the existing charge object instead of charging again.
      - The consumer writes the missing `COMPLETED` record to the database and acks the queue.
+
+---
+
+## 🚪 High-Throughput API Gateway & Parallel BFF Scatter-Gather
+
+Modern microservices rely on an edge or internal **API Gateway** to terminate TLS, enforce authentication, balance traffic across backend replicas, and aggregate heterogeneous downstream microservices into a single consolidated payload (Backend-For-Frontend / BFF pattern).
+
+```
+[ Mobile / Web Client ]
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 gokit/gateway Reverse Proxy                 │
+│  - X-Forwarded-For / X-Request-ID Header Sanitization       │
+│  - Multi-Strategy Load Balancing (LeastConn, Weighted, etc) │
+│  - Scatter-Gather Parallel Microservice Fan-out             │
+└───────────────┬─────────────────────────────┬───────────────┘
+                │                             │
+       (BFF Parallel Fanout)         (Reverse Proxy Passthrough)
+                │                             │
+    ┌───────────┼───────────┐                 ▼
+    ▼           ▼           ▼         ┌─────────────────┐
+┌───────┐   ┌───────┐   ┌───────┐     │ Order Service   │
+│UserSvc│   │FeedSvc│   │AdSvc  │     └─────────────────┘
+└───────┘   └───────┘   └───────┘
+```
+
+### 1. Reverse Proxy Mechanics & Idle Pool Alignment
+- **The Keep-Alive Deadlock:** If the downstream microservice closes an idle TCP connection without the edge proxy realizing it, the next proxied request encounters an abrupt `EOF` or `connection reset by peer`.
+- [`gateway.NewProxy`](file:///Users/dhawal.dyavanpalli/go/src/gokit/gateway/README.md) utilizes modern Go `net/http/httputil.ReverseProxy` with explicit `Rewrite` hooks (preventing hop-by-hop header leaks) and sets configurable connection pooling (`MaxIdleConnsPerHost`, `IdleConnTimeout`).
+
+### 2. Multi-Strategy Load Balancing
+- **Round-Robin**: Uniform distribution for homogeneous stateless workers.
+- **Least-Connection**: Routes traffic to the pod currently handling the fewest concurrent in-flight requests; ideal when request processing times vary by orders of magnitude (e.g. fast metadata queries vs heavy PDF generations).
+- **IP-Hash**: Deterministic affinity routing ensuring consecutive requests from the same client IP land on the same host (e.g. for warm local caching), with fallback when nodes fail.
+- Implemented via [`gateway.NewLoadBalancer`](file:///Users/dhawal.dyavanpalli/go/src/gokit/gateway/README.md).
+
+### 3. Scatter-Gather Parallel Fan-Out (BFF)
+When rendering a mobile dashboard requiring data from 4 separate microservices (Profile, Orders, Notifications, Recommendations):
+- **Sequential Calls:** Total latency $= \sum_{i=1}^N T_i$. A slow recommendation service (500ms) pushes total response time $> 800\text{ms}$.
+- **Parallel Fan-out with SLA Budget:** Total latency $= \max(T_1, T_2, \dots) \le \text{Timeout}$.
+- [`gateway.ScatterGather`](file:///Users/dhawal.dyavanpalli/go/src/gokit/gateway/README.md) executes tasks in parallel with `sync.WaitGroup`, enforces a strict overall context deadline, and allows non-critical components to degrade gracefully while essential data (Profile and Orders) returns successfully.
+
+---
+
+## 📦 Write Buffering vs Read Coalescing (The DataLoader Pattern)
+
+I/O roundtrips—whether network hops to a database or disk writes—are the primary bottleneck in modern high-throughput architectures. The [`batcher`](file:///Users/dhawal.dyavanpalli/go/src/gokit/batcher/README.md) package provides dual solutions for write and read optimization.
+
+```
+       WRITE PATH (Batch Accumulator)                     READ PATH (DataLoader)
+50k writes/s                                        10k concurrent resolvers
+      │                                                         │
+      ▼                                                         ▼
+┌──────────────────────────────┐              ┌──────────────────────────────────┐
+│ batcher.BatchAccumulator     │              │ batcher.DataLoader               │
+│ - Ring buffer / Channel      │              │ - 10ms Linger Coalescing         │
+│ - MaxBatchSize: 500          │              │ - In-Memory TTL Cache            │
+│ - Linger: 50ms               │              │ - Keys: ["u1", "u2", ...]        │
+└──────────────┬───────────────┘              └─────────────────┬────────────────┘
+               │                                                │
+               ▼ Bulk Insert                                    ▼ Coalesced SELECT
+    ┌──────────────────────┐                         ┌──────────────────────┐
+    │  Postgres / Log Sink │                         │ Database / Redis     │
+    └──────────────────────┘                         └──────────────────────┘
+```
+
+### 1. Write Path: The Batch Accumulator
+Writing 50,000 individual audit records, analytics events, or metrics per second generates 50,000 distinct network packets and transaction commits, exhausting database WAL throughput.
+- [`batcher.NewBatchAccumulator`](file:///Users/dhawal.dyavanpalli/go/src/gokit/batcher/README.md) buffers items in memory and dispatches a bulk write when **either** `MaxBatchSize` is reached or `LingerDuration` expires.
+- Provides `Flush()` for clean shutdown without data loss.
+
+### 2. Read Path: The DataLoader Pattern
+In GraphQL or nested REST APIs, rendering a list of 50 orders where each order references a `UserID` causes the infamous **N+1 query storm** (1 query for orders + 50 queries for individual users).
+- [`batcher.NewDataLoader`](file:///Users/dhawal.dyavanpalli/go/src/gokit/batcher/README.md) collects all `Load(key)` calls happening within a tiny window (e.g. 5–10ms) or single tick, deduplicates the keys, and invokes a single batch fetch function:
+  $$\text{SELECT } * \text{ FROM users WHERE id IN } (k_1, k_2, \dots, k_N)$$
+- Results are mapped back to their individual caller promises with optional per-request in-memory memoization.
+
+---
+
+## 🔐 Zero-Trust Secrets Management & Memory Safety
+
+Production secrets (database passwords, API tokens, encryption keys) are high-value targets. Hardcoded strings, unredacted log lines, and memory scraping pose severe security vulnerabilities.
+
+### 1. The Redaction & Memory Zeroing Invariant
+- **Log Scraping:** Standard Go structs printed via `fmt.Printf("%+v", cfg)` or serialized with `json.Marshal` dump sensitive strings into plaintext log aggregators (Elasticsearch, CloudWatch).
+- [`secrets.Secret`](file:///Users/dhawal.dyavanpalli/go/src/gokit/secrets/README.md) overrides `String()`, `GoString()`, and implements `json.Marshaler` returning `"[REDACTED]"`.
+- **Memory Residuals:** Garbage collectors do not overwrite deallocated heap bytes. A core dump or malicious memory scrape can recover passwords minutes after deallocation. [`Secret.Zero()`](file:///Users/dhawal.dyavanpalli/go/src/gokit/secrets/README.md) cryptographically scrubs the underlying byte buffer with zeros upon cleanup.
+
+### 2. Multi-Provider Fallback & Automated Rotation
+- **Provider Priority:** Kubernetes Secret volumes (`FileProvider`) $\to$ Normalized Environment Variables (`EnvProvider`) $\to$ In-Memory Mocks for Tests (`MemoryProvider`).
+- **Rotation without Restarts:** [`secrets.NewManager`](file:///Users/dhawal.dyavanpalli/go/src/gokit/secrets/README.md) caches secrets in memory with a configurable TTL and runs background auto-refresh workers, pulling rotated credentials from upstream vaults without requiring pod termination.
+
+---
+
+## 🚀 Zero-Downtime Database Schema Migrations & Expand-Contract Pattern
+
+Deploying database schema changes in high-availability environments requires coordinated execution and backward compatibility.
+
+```
+                         Kubernetes Rolling Update
+             ┌───────────────────────┬───────────────────────┐
+             ▼                       ▼                       ▼
+      [ App Pod 1 ]           [ App Pod 2 ]           [ App Pod 3 ]
+             │                       │                       │
+             └───────────────────────┼───────────────────────┘
+                                     │
+                     Acquire Distributed Lock (TTL: 30s)
+                                     │
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │    migration.Migrator       │
+                      │  - schema_migrations table  │
+                      │  - Atomic Transaction DDL   │
+                      │  - Dirty State Detection    │
+                      └──────────────┬──────────────┘
+                                     │
+                                     ▼
+                            [ PostgreSQL / MySQL ]
+```
+
+### 1. The Multi-Replica Migration Race
+When a new version of a microservice rolls out across 50 Kubernetes pods, all pods start concurrently. If each pod attempts to run `CREATE TABLE` or `ALTER TABLE` simultaneously:
+- Database locks deadlock.
+- Schema version tables collide with primary key violations.
+- [`migration.WithLocker`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/README.md) integrates with [`distlock.Locker`](file:///Users/dhawal.dyavanpalli/go/src/gokit/distlock/README.md), serializing execution so exactly **one pod** runs the migration while other replicas await completion.
+
+### 2. The Expand and Contract Pattern (Parallel Run)
+Never alter or drop a column in a single step while old code is still running:
+1. **Expand**: Add the new column as nullable (`ALTER TABLE users ADD COLUMN full_name TEXT`). Deploy code version $V_1$ that writes to both old and new columns, reading from old.
+2. **Backfill**: Migrate historical records in batches (`UPDATE users SET full_name = ... WHERE ...`).
+3. **Switch**: Deploy code version $V_2$ reading and writing exclusively to `full_name`.
+4. **Contract**: Drop the deprecated old column (`ALTER TABLE users DROP COLUMN first_name, DROP COLUMN last_name`).
+
+### 3. Dirty Migration Recovery
+If a DDL statement fails midway (e.g. unique constraint violation during an index creation):
+- [`migration.Migrator`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/README.md) records `dirty = true` in `schema_migrations`.
+- Subsequent deployments refuse to run on dirty databases, preventing compounded schema drift.
+- Operators review the failure, manually fix the index, and invoke [`migrator.Force(version)`](file:///Users/dhawal.dyavanpalli/go/src/gokit/migration/README.md) to restore clean state.
+
+---
+
+## 🔄 Finite State Machines & Optimistic Concurrency Invariants
+
+Complex business processes (KYC approval, order delivery, loan underwriting) must never allow illegal transitions (e.g. shipping a cancelled order, or approving a rejected loan).
+
+```
+[ PENDING ] ──(PAYMENT_SUCCESS)──> [ PAID ] ──(SHIP_ORDER)──> [ SHIPPED ]
+     │                                │                             │
+     │ (CANCEL)                       │ (REFUND)                    │ (DELIVER)
+     ▼                                ▼                             ▼
+[ CANCELLED ]                   [ REFUNDED ]                  [ DELIVERED ]
+```
+
+### 1. Guard-Enforced Determinism
+- Ad-hoc database string updates (`UPDATE orders SET status = 'DELIVERED' WHERE id = 1`) lack invariant enforcement.
+- [`workflow.Engine`](file:///Users/dhawal.dyavanpalli/go/src/gokit/workflow/README.md) registers allowed `Transition{From, To, Event}` tuples and executes conditional `Guard` functions before permitting any state mutation.
+
+### 2. Optimistic Concurrency Control (Version Locking)
+To prevent two concurrent requests from both transitioning an order simultaneously:
+- Include a monotonic `version` column in the domain entity.
+- The workflow engine validates that the entity's version matches before committing the transition:
+  $$\text{UPDATE orders SET status = 'PAID', version = version + 1 WHERE id = 1 AND version = 3}$$
+- If another worker transitioned the entity first, row count $= 0$, and the engine aborts with a concurrency conflict error.
+
+---
+
+## 🏢 Multi-Tenant Data Isolation: Postgres Row-Level Security (RLS)
+
+In multi-tenant B2B architectures, housing each tenant in a separate database instance is cost-prohibitive. However, sharing a database poses the existential risk of **cross-tenant data leakage** caused by a developer forgetting `WHERE tenant_id = ?` in a complex query.
+
+```
+Incoming Request (Header: X-Tenant-ID: tenant_acme)
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│              multitenancy.TenantMiddleware                  │
+│  - Extracts & validates tenant context                      │
+│  - Executes: SET LOCAL app.current_tenant_id = 'tenant_acme'│
+└──────────────┬──────────────────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    PostgreSQL Engine                        │
+│  POLICY: WHERE tenant_id = current_setting('app.tenant_id') │
+│                                                             │
+│  Developer runs: SELECT * FROM documents;                   │
+│  Postgres executes: Only returns 'tenant_acme' rows!        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 1. Defense-in-Depth with PostgreSQL RLS
+- Application-level filters (`GORM.Where("tenant_id = ?", tenantID)`) are vulnerable to developer oversight.
+- [`multitenancy`](file:///Users/dhawal.dyavanpalli/go/src/gokit/multitenancy/README.md) combines application scopes with database-level Row-Level Security (RLS).
+- By setting session variables on each pooled connection (`SET LOCAL app.current_tenant_id = :tenantID`), Postgres itself rejects or hides rows belonging to other tenants, even on raw un-scoped SQL queries.
+
+### 2. Scoped Caching & Noisy Neighbors
+- **Cache Isolation:** Prefix all cache keys with tenant identifiers: `tenant:{id}:user:{uid}` to prevent cache collisions and cache poisoning across tenants.
+- **Fair Resource Sharing:** A single whale tenant firing 10,000 QPS must not exhaust server thread pools. [`bulkhead.NewTenantBulkhead`](file:///Users/dhawal.dyavanpalli/go/src/gokit/bulkhead/README.md) allocates per-tenant concurrency semaphores, isolating noisy tenants while guaranteeing headroom for smaller tenants.
+
 
