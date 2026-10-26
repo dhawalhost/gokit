@@ -1,6 +1,6 @@
 # EventBus (`gokit/eventbus`)
 
-`eventbus` provides a high-performance, resilient publish/subscribe event-driven messaging abstraction for Go microservices. It features pluggable backends (in-memory with wildcard routing, and Redis Streams with consumer groups), a composable middleware pipeline (panic recovery, retry with backoff, dead-letter queues, and OpenTelemetry tracing), and seamless integration with the transactional outbox pattern.
+`eventbus` provides a high-performance, resilient publish/subscribe event-driven messaging abstraction for Go microservices. It features pluggable backends (in-memory with wildcard routing, Redis Streams with consumer groups, Apache Kafka via [`eventbus/kafka`](./kafka/README.md), and RabbitMQ via [`eventbus/rabbitmq`](./rabbitmq/README.md)), a composable middleware pipeline (panic recovery, retry with backoff, dead-letter queues, and OpenTelemetry tracing), and seamless integration with the transactional outbox pattern.
 
 ---
 
@@ -19,6 +19,9 @@
   - Consumer Groups enable load-balanced, competing consumer distribution across multiple service replicas.
   - Automatic stream creation (`MKSTREAM`) and approximate stream trimming (`MAXLEN ~`) to cap memory usage.
   - Configurable `AutoAck` and multi-goroutine worker concurrency per subscription.
+- **Enterprise Streaming Adapters**:
+  - **Apache Kafka ([`eventbus/kafka`](./kafka/README.md))**: Production-grade Kafka adapter backed by `segmentio/kafka-go` with deterministic partition hashing, batching, snappy/lz4/gzip compression, TLS, and rebalanced consumer group worker pools.
+  - **RabbitMQ ([`eventbus/rabbitmq`](./rabbitmq/README.md))**: Advanced AMQP 0-9-1 adapter backed by `rabbitmq/amqp091-go` featuring topic exchanges, durable or ephemeral queues, QoS prefetch control, manual/automatic ACK/NACK, and competing consumer groups.
 - **Resilient Middleware Pipeline**:
   - **Recovery**: Catches panics in event handlers and converts them into structured errors.
   - **Retry**: Retries transient handler failures with configurable attempts and backoff.
@@ -209,3 +212,13 @@ relay.Start(ctx)
 | `WithConsumerName(name)` | Sets the unique consumer name inside the consumer group |
 | `WithAutoAck(bool)` | Automatically acknowledges (`XACK`) messages on successful handler completion |
 | `WithConcurrency(workers)` | Spawns multiple concurrent worker goroutines processing messages |
+
+---
+
+## Enterprise Broker Subpackages
+
+For large-scale, distributed production deployments requiring dedicated brokers, `gokit` provides official subpackages:
+
+- **[Apache Kafka Subpackage (`gokit/eventbus/kafka`)](./kafka/README.md)**: Partition keys, dynamic topic writers, batching, compression, TLS, and rebalanced consumer group workers.
+- **[RabbitMQ Subpackage (`gokit/eventbus/rabbitmq`)](./rabbitmq/README.md)**: AMQP 0-9-1 topic exchanges, durable/exclusive queues, prefetch QoS, dead-letter routing, and competing consumer pools.
+
