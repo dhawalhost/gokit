@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -574,22 +575,24 @@ func TestIPKeyFunc_TableDriven(t *testing.T) {
 			expectedIP: "192.168.1.1",
 		},
 		{
-			name: "extracts IP from X-Real-IP header",
+			name: "ignores X-Real-IP header when using default IPKeyFunc",
 			setupReq: func() *http.Request {
 				r, _ := http.NewRequest(http.MethodGet, "/", nil)
+				r.RemoteAddr = "198.51.100.7:1234"
 				r.Header.Set("X-Real-IP", "1.2.3.4")
 				return r
 			},
-			expectedIP: "1.2.3.4",
+			expectedIP: "198.51.100.7",
 		},
 		{
-			name: "extracts first IP from comma-separated X-Forwarded-For header",
+			name: "ignores X-Forwarded-For header when using default IPKeyFunc",
 			setupReq: func() *http.Request {
 				r, _ := http.NewRequest(http.MethodGet, "/", nil)
+				r.RemoteAddr = "198.51.100.8:1234"
 				r.Header.Set("X-Forwarded-For", "203.0.113.195, 70.41.3.18, 150.172.238.178")
 				return r
 			},
-			expectedIP: "203.0.113.195",
+			expectedIP: "198.51.100.8",
 		},
 		{
 			name: "rejects invalid IP in X-Forwarded-For and falls back to RemoteAddr",
@@ -881,8 +884,6 @@ func TestIdempotencyMiddleware_TableDriven(t *testing.T) {
 }
 
 func TestGK02_IPKeyFunc_TrustedProxies(t *testing.T) {
-	t.Skip("GK-02: pending fix")
-
 	store := ratelimit.NewInMemoryStore()
 	defer store.Stop()
 
@@ -913,6 +914,56 @@ func TestGK02_IPKeyFunc_TrustedProxies(t *testing.T) {
 	if allowedCount != 5 || blockedCount != 95 {
 		t.Fatalf("GK-02: expected 5 allowed and 95 blocked in shared bucket, got allowed=%d blocked=%d", allowedCount, blockedCount)
 	}
+
+	t.Run("trusted proxies walk XFF right-to-left to first untrusted hop", func(t *testing.T) {
+		trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+		keyFn := middleware.NewTrustedIPKeyFunc(trusted)
+
+		// Spoofed leftmost IP, real client IP 198.51.100.42, internal proxy 10.0.0.5, peer 10.0.0.2
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "10.0.0.2:443"
+		req.Header.Set("X-Forwarded-For", "1.1.1.1, 198.51.100.42, 10.0.0.5")
+		if got := keyFn(req); got != "198.51.100.42" {
+			t.Fatalf("GK-02: expected first untrusted hop 198.51.100.42, got %q", got)
+		}
+
+		// RateLimit with TrustedProxies buckets by the first untrusted hop, not proxy IP
+		rlStore := ratelimit.NewInMemoryStore()
+		defer rlStore.Stop()
+		rlMW := middleware.RateLimit(middleware.RateLimitConfig{
+			RequestsPerSecond: 0.001,
+			Burst:             1,
+			TrustedProxies:    trusted,
+			Store:             rlStore,
+		})(noopHandler)
+
+		r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+		r1.RemoteAddr = "10.0.0.2:1001"
+		r1.Header.Set("X-Forwarded-For", "198.51.100.50, 10.0.0.9")
+		w1 := httptest.NewRecorder()
+		rlMW.ServeHTTP(w1, r1)
+		if w1.Code != http.StatusOK {
+			t.Fatalf("expected 200 for first client, got %d", w1.Code)
+		}
+
+		r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+		r2.RemoteAddr = "10.0.0.2:1002"
+		r2.Header.Set("X-Forwarded-For", "198.51.100.51, 10.0.0.9")
+		w2 := httptest.NewRecorder()
+		rlMW.ServeHTTP(w2, r2)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("expected 200 for second distinct client behind proxy, got %d", w2.Code)
+		}
+
+		r1Repeat := httptest.NewRequest(http.MethodGet, "/", nil)
+		r1Repeat.RemoteAddr = "10.0.0.3:1003"
+		r1Repeat.Header.Set("X-Forwarded-For", "203.0.113.99, 198.51.100.50, 10.0.0.8")
+		w3 := httptest.NewRecorder()
+		rlMW.ServeHTTP(w3, r1Repeat)
+		if w3.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 for repeated untrusted client 198.51.100.50, got %d", w3.Code)
+		}
+	})
 }
 
 func TestGK03_TenantBoundToIdentity(t *testing.T) {

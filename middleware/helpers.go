@@ -3,6 +3,7 @@ package middleware
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 )
 
@@ -59,27 +60,70 @@ func extractIP(addr string) string {
 	return addr
 }
 
-// IPKeyFunc returns the client IP address from the request, checking
-// X-Real-IP and X-Forwarded-For before falling back to RemoteAddr.
-// It strips ports, trims spaces, and validates IP format to prevent spoofing
-// and port-based rate-limit bucket splitting.
+// IPKeyFunc returns the direct peer IP address from r.RemoteAddr.
+// Forwarded headers (X-Forwarded-For, X-Real-IP) are intentionally ignored because
+// untrusted clients can spoof them to bypass rate limiting. Use NewTrustedIPKeyFunc
+// when running behind trusted reverse proxies.
 func IPKeyFunc(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		cleaned := extractIP(ip)
-		if net.ParseIP(cleaned) != nil {
-			return cleaned
+	return extractIP(r.RemoteAddr)
+}
+
+// NewTrustedIPKeyFunc returns a key function that inspects X-Forwarded-For (right-to-left,
+// returning the first untrusted hop) and X-Real-IP only when r.RemoteAddr belongs to one
+// of trustedProxies. If r.RemoteAddr is not a trusted proxy or no forwarded IP is valid,
+// it falls back to r.RemoteAddr.
+func NewTrustedIPKeyFunc(trustedProxies []netip.Prefix) func(*http.Request) string {
+	prefixes := make([]netip.Prefix, len(trustedProxies))
+	copy(prefixes, trustedProxies)
+
+	return func(r *http.Request) string {
+		remoteIP := extractIP(r.RemoteAddr)
+		if len(prefixes) == 0 {
+			return remoteIP
 		}
-	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For may contain multiple IPs (client, proxy1, proxy2).
-		// Extract the first (client) IP.
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			cleaned := extractIP(parts[0])
-			if net.ParseIP(cleaned) != nil {
-				return cleaned
+
+		remoteAddr, err := netip.ParseAddr(remoteIP)
+		if err != nil {
+			return remoteIP
+		}
+		remoteAddr = remoteAddr.Unmap()
+		if !isTrustedProxy(remoteAddr, prefixes) {
+			return remoteAddr.String()
+		}
+
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			candidate := remoteAddr.String()
+			for i := len(parts) - 1; i >= 0; i-- {
+				hopStr := extractIP(parts[i])
+				hopAddr, parseErr := netip.ParseAddr(hopStr)
+				if parseErr != nil {
+					return candidate
+				}
+				hopAddr = hopAddr.Unmap()
+				if !isTrustedProxy(hopAddr, prefixes) {
+					return hopAddr.String()
+				}
+				candidate = hopAddr.String()
+			}
+			return candidate
+		}
+
+		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+			if realAddr, parseErr := netip.ParseAddr(extractIP(xrip)); parseErr == nil {
+				return realAddr.Unmap().String()
 			}
 		}
+
+		return remoteAddr.String()
 	}
-	return extractIP(r.RemoteAddr)
+}
+
+func isTrustedProxy(addr netip.Addr, prefixes []netip.Prefix) bool {
+	for _, p := range prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

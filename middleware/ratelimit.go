@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"net/netip"
 	"strconv"
 
 	"github.com/dhawalhost/gokit/ratelimit"
@@ -13,8 +14,12 @@ type RateLimitConfig struct {
 	RequestsPerSecond float64
 	// Burst is the maximum burst size.
 	Burst int
-	// KeyFunc derives a per-request key (e.g. client IP). Defaults to IPKeyFunc.
+	// KeyFunc derives a per-request key (e.g. client IP). Defaults to IPKeyFunc
+	// (or NewTrustedIPKeyFunc when TrustedProxies is non-empty).
 	KeyFunc func(r *http.Request) string
+	// TrustedProxies lists proxy CIDR prefixes whose X-Forwarded-For / X-Real-IP
+	// headers are trusted when KeyFunc is nil.
+	TrustedProxies []netip.Prefix
 	// Store is the backend that enforces the limit.
 	Store ratelimit.Store
 }
@@ -24,7 +29,11 @@ type RateLimitConfig struct {
 // and X-RateLimit-Limit headers.
 func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 	if cfg.KeyFunc == nil {
-		cfg.KeyFunc = IPKeyFunc
+		if len(cfg.TrustedProxies) > 0 {
+			cfg.KeyFunc = NewTrustedIPKeyFunc(cfg.TrustedProxies)
+		} else {
+			cfg.KeyFunc = IPKeyFunc
+		}
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
