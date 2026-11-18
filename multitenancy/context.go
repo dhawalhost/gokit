@@ -5,6 +5,7 @@ import (
 )
 
 type tenantContextKey struct{}
+type claimsMapContextKey struct{}
 
 // Tenant represents an authenticated tenant identity.
 type Tenant struct {
@@ -43,4 +44,19 @@ func TenantFromContext(ctx context.Context) (Tenant, bool) {
 		return t, true
 	}
 	return Tenant{}, false
+}
+
+// WithClaimsMap injects authenticated token claims into ctx so tenant resolution
+// middlewares can verify caller identity without importing JWT libraries directly.
+func WithClaimsMap(ctx context.Context, claims map[string]any) context.Context {
+	return context.WithValue(ctx, claimsMapContextKey{}, claims)
+}
+
+// ClaimsMapFromContext retrieves authenticated token claims stored via WithClaimsMap.
+func ClaimsMapFromContext(ctx context.Context) (map[string]any, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	claims, ok := ctx.Value(claimsMapContextKey{}).(map[string]any)
+	return claims, ok
 }

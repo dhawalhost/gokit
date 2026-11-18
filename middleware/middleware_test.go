@@ -967,8 +967,6 @@ func TestGK02_IPKeyFunc_TrustedProxies(t *testing.T) {
 }
 
 func TestGK03_TenantBoundToIdentity(t *testing.T) {
-	t.Skip("GK-03: pending fix")
-
 	secret := "gk03-secret"
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":       "user-1",
@@ -1012,8 +1010,86 @@ func TestGK03_TenantBoundToIdentity(t *testing.T) {
 			if handlerCalled || seenTenant == "tenant-b" {
 				t.Fatalf("GK-03 (%s): handler called=%v seenTenant=%q, must never see tenant-b", tc.name, handlerCalled, seenTenant)
 			}
+
+			// Without header, tenant comes from JWT claim.
+			seenTenant = ""
+			handlerCalled = false
+			reqNoHdr := httptest.NewRequest(http.MethodGet, "/items", nil)
+			reqNoHdr.Header.Set("Authorization", "Bearer "+tokenStr)
+			recNoHdr := httptest.NewRecorder()
+			chain.ServeHTTP(recNoHdr, reqNoHdr)
+			if recNoHdr.Code != http.StatusOK || !handlerCalled || seenTenant != "tenant-a" {
+				t.Fatalf("GK-03 (%s no header): code=%d called=%v seen=%q", tc.name, recNoHdr.Code, handlerCalled, seenTenant)
+			}
+
+			// Matching header is permitted.
+			seenTenant = ""
+			handlerCalled = false
+			reqMatch := httptest.NewRequest(http.MethodGet, "/items", nil)
+			reqMatch.Header.Set("Authorization", "Bearer "+tokenStr)
+			reqMatch.Header.Set("X-Tenant-ID", "tenant-a")
+			recMatch := httptest.NewRecorder()
+			chain.ServeHTTP(recMatch, reqMatch)
+			if recMatch.Code != http.StatusOK || !handlerCalled || seenTenant != "tenant-a" {
+				t.Fatalf("GK-03 (%s matching header): code=%d called=%v seen=%q", tc.name, recMatch.Code, handlerCalled, seenTenant)
+			}
 		})
 	}
+
+	t.Run("custom claim, resolver, and explicit trust header opt-in", func(t *testing.T) {
+		orgTok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"sub":    "user-2",
+			"org_id": "org-alpha",
+			"exp":    time.Now().Add(time.Hour).Unix(),
+		})
+		orgTokStr, _ := orgTok.SignedString([]byte(secret))
+
+		var gotTenant string
+		h := middleware.JWT(middleware.JWTConfig{SecretKey: []byte(secret)})(
+			multitenancy.RequireTenant(multitenancy.WithTenantClaim("org_id"))(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotTenant, _ = multitenancy.FromContext(r.Context())
+					w.WriteHeader(http.StatusOK)
+				}),
+			),
+		)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+orgTokStr)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || gotTenant != "org-alpha" {
+			t.Fatalf("custom claim failed: code=%d tenant=%q", rec.Code, gotTenant)
+		}
+
+		// WithTrustHeader allows service-to-service header override.
+		trustedH := middleware.JWT(middleware.JWTConfig{SecretKey: []byte(secret)})(
+			multitenancy.RequireTenant(multitenancy.WithTrustHeader(true))(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotTenant, _ = multitenancy.FromContext(r.Context())
+					w.WriteHeader(http.StatusOK)
+				}),
+			),
+		)
+		reqTrust := httptest.NewRequest(http.MethodGet, "/", nil)
+		reqTrust.Header.Set("Authorization", "Bearer "+tokenStr)
+		reqTrust.Header.Set("X-Tenant-ID", "tenant-b")
+		recTrust := httptest.NewRecorder()
+		trustedH.ServeHTTP(recTrust, reqTrust)
+		if recTrust.Code != http.StatusOK || gotTenant != "tenant-b" {
+			t.Fatalf("WithTrustHeader failed: code=%d tenant=%q", recTrust.Code, gotTenant)
+		}
+
+		// Custom TenantResolver error returns 403.
+		resH := multitenancy.RequireTenant(multitenancy.WithTenantResolver(func(_ *http.Request) (string, error) {
+			return "", multitenancy.ErrTenantMismatch
+		}))(noopHandler)
+		recRes := httptest.NewRecorder()
+		resH.ServeHTTP(recRes, httptest.NewRequest(http.MethodGet, "/", nil))
+		if recRes.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 from failing resolver, got %d", recRes.Code)
+		}
+	})
 }
 
 func TestGK04_TimeoutPanicAndLateWrite(t *testing.T) {

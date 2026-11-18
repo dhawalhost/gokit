@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/dhawalhost/gokit/multitenancy"
 )
 
 // JWTConfig holds configuration for the JWT middleware.
@@ -88,9 +90,11 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Store under both custom key and default key so retrieval always works
+			// Store under both custom key and default key so retrieval always works,
+			// and expose claims to multitenancy for identity-bound tenant validation.
 			ctx := context.WithValue(r.Context(), jwtClaimsContextKey{cfg.ContextKey}, claims)
 			ctx = context.WithValue(ctx, defaultClaimsContextKey{}, claims)
+			ctx = multitenancy.WithClaimsMap(ctx, map[string]any(claims))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -98,7 +102,8 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 
 // WithClaims stores claims in context for testing or downstream propagation.
 func WithClaims(ctx context.Context, claims jwt.MapClaims) context.Context {
-	return context.WithValue(ctx, defaultClaimsContextKey{}, claims)
+	ctx = context.WithValue(ctx, defaultClaimsContextKey{}, claims)
+	return multitenancy.WithClaimsMap(ctx, map[string]any(claims))
 }
 
 // ClaimsFromContext retrieves JWT claims stored by the JWT middleware.
