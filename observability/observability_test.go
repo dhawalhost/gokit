@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -442,4 +443,140 @@ func TestObservability_SpanHelpers(t *testing.T) {
 	if id := observability.SpanID(context.Background()); id != "" {
 		t.Errorf("expected empty span ID on plain context, got %q", id)
 	}
+}
+
+func TestGK16_OTLPTracingEnvAndDefaults(t *testing.T) {
+	defer otel.SetTracerProvider(trace.NewNoopTracerProvider())
+
+	t.Run("honors OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_RESOURCE_ATTRIBUTES, and default 10% sampling", func(t *testing.T) {
+		var received atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			received.Add(1)
+			_, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
+		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=staging,team=core")
+
+		shutdown, err := observability.InitTracer(context.Background(), config.TelemetryConfig{
+			Enabled:     true,
+			ServiceName: "gk16-service",
+		})
+		if err != nil {
+			t.Fatalf("InitTracer failed: %v", err)
+		}
+
+		// Check resource attributes and sampling across 1,000 root spans.
+		tracer := otel.Tracer("gk16-test")
+		var sampled int
+		var sawEnvAttr bool
+		for i := 0; i < 1000; i++ {
+			_, sp := tracer.Start(context.Background(), "op")
+			if sp.SpanContext().IsSampled() {
+				sampled++
+			}
+			if ro, ok := sp.(sdktrace.ReadOnlySpan); ok && !sawEnvAttr {
+				for _, kv := range ro.Resource().Attributes() {
+					if kv.Key == "deployment.environment" && kv.Value.AsString() == "staging" {
+						sawEnvAttr = true
+					}
+				}
+			}
+			sp.End()
+		}
+
+		if err := shutdown(context.Background()); err != nil {
+			t.Logf("shutdown note: %v", err)
+		}
+
+		if !sawEnvAttr {
+			t.Fatal("GK-16: expected OTEL_RESOURCE_ATTRIBUTES deployment.environment=staging on span resource")
+		}
+		if sampled == 1000 || sampled < 30 || sampled > 200 {
+			t.Fatalf("GK-16: expected ~10%% sampling (30..200 of 1000), got %d", sampled)
+		}
+		if received.Load() == 0 {
+			t.Fatal("GK-16: expected OTEL_EXPORTER_OTLP_ENDPOINT server to receive exported traces")
+		}
+	})
+
+	t.Run("defaults to TLS when endpoint host:port is provided without WithInsecure", func(t *testing.T) {
+		var plaintextHits atomic.Int32
+		plainSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			plaintextHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer plainSrv.Close()
+
+		hostPort := strings.TrimPrefix(plainSrv.URL, "http://")
+		shutdown, err := observability.InitTracer(context.Background(), config.TelemetryConfig{
+			Enabled:      true,
+			ServiceName:  "gk16-tls-check",
+			OTLPEndpoint: hostPort,
+		}, observability.WithSampler(sdktrace.AlwaysSample()))
+		if err != nil {
+			t.Fatalf("InitTracer failed: %v", err)
+		}
+
+		_, sp := otel.Tracer("gk16-tls").Start(context.Background(), "tls-op")
+		sp.End()
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer shutCancel()
+		_ = shutdown(shutCtx)
+
+		if plaintextHits.Load() > 0 {
+			t.Fatal("GK-16: InitTracer sent plaintext HTTP to host:port without WithInsecure()")
+		}
+	})
+
+	t.Run("WithInsecure, WithServiceVersion, WithDeploymentEnvironment, and host attribute", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		hostPort := strings.TrimPrefix(srv.URL, "http://")
+		shutdown, err := observability.InitTracer(context.Background(), config.TelemetryConfig{
+			Enabled:      true,
+			ServiceName:  "gk16-opts",
+			OTLPEndpoint: hostPort,
+		},
+			observability.WithInsecure(),
+			observability.WithSampler(sdktrace.AlwaysSample()),
+			observability.WithServiceVersion("1.2.3"),
+			observability.WithDeploymentEnvironment("prod"),
+		)
+		if err != nil {
+			t.Fatalf("InitTracer failed: %v", err)
+		}
+
+		_, sp := otel.Tracer("gk16-opts").Start(context.Background(), "op")
+		var hasVer, hasEnv, hasHost bool
+		if ro, ok := sp.(sdktrace.ReadOnlySpan); ok {
+			for _, kv := range ro.Resource().Attributes() {
+				switch kv.Key {
+				case "service.version":
+					hasVer = kv.Value.AsString() == "1.2.3"
+				case "deployment.environment":
+					hasEnv = kv.Value.AsString() == "prod"
+				case "host.name":
+					hasHost = kv.Value.AsString() != ""
+				}
+			}
+		}
+		sp.End()
+		if err := shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown failed: %v", err)
+		}
+		if !hasVer || !hasEnv || !hasHost {
+			t.Fatalf("GK-16: missing resource attrs ver=%v env=%v host=%v", hasVer, hasEnv, hasHost)
+		}
+		if hits.Load() == 0 {
+			t.Fatal("GK-16: expected WithInsecure() to export over plaintext HTTP")
+		}
+	})
 }

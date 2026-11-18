@@ -203,7 +203,10 @@ type LogConfig struct {
 
 // TelemetryConfig holds OpenTelemetry configuration.
 type TelemetryConfig struct {
-	Enabled      bool   `mapstructure:"enabled" json:"enabled"`
-	OTLPEndpoint string `mapstructure:"otlp_endpoint" json:"otlp_endpoint"`
-	ServiceName  string `mapstructure:"service_name" json:"service_name"`
+	Enabled        bool   `mapstructure:"enabled" json:"enabled"`
+	OTLPEndpoint   string `mapstructure:"otlp_endpoint" json:"otlp_endpoint"`
+	ServiceName    string `mapstructure:"service_name" json:"service_name"`
+	ServiceVersion string `mapstructure:"service_version" json:"service_version"`
+	Environment    string `mapstructure:"environment" json:"environment"`
+	Insecure       bool   `mapstructure:"insecure" json:"insecure"`
 }
