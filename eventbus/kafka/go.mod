@@ -3,7 +3,7 @@ module github.com/dhawalhost/gokit/eventbus/kafka
 go 1.26.11
 
 require (
-	github.com/dhawalhost/gokit v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
 	github.com/google/uuid v1.6.0
 	github.com/segmentio/kafka-go v0.4.51
 )

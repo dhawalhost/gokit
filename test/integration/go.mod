@@ -3,9 +3,9 @@ module github.com/dhawalhost/gokit/test/integration
 go 1.26.11
 
 require (
-	github.com/dhawalhost/gokit v0.10.0
-	github.com/dhawalhost/gokit/database v0.10.0
-	github.com/dhawalhost/gokit/outbox v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
+	github.com/dhawalhost/gokit/database v0.11.0
+	github.com/dhawalhost/gokit/outbox v0.11.0
 	github.com/redis/go-redis/v9 v9.18.0
 	gorm.io/gorm v1.31.2
 )
@@ -13,7 +13,7 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dhawalhost/gokit/x v0.10.0 // indirect
+	github.com/dhawalhost/gokit/x v0.11.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

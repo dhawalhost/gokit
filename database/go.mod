@@ -3,8 +3,8 @@ module github.com/dhawalhost/gokit/database
 go 1.26.11
 
 require (
-	github.com/dhawalhost/gokit v0.10.0
-	github.com/dhawalhost/gokit/x v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
+	github.com/dhawalhost/gokit/x v0.11.0
 	github.com/jackc/pgx/v5 v5.13.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2

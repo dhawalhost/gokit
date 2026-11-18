@@ -3,7 +3,7 @@ module github.com/dhawalhost/gokit/outbox
 go 1.26.11
 
 require (
-	github.com/dhawalhost/gokit v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
 	go.uber.org/zap v1.27.1
 	gorm.io/gorm v1.31.2
 )

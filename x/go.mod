@@ -5,7 +5,7 @@ go 1.26.11
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/andybalholm/brotli v1.2.7
-	github.com/dhawalhost/gokit v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.4
 	github.com/redis/go-redis/v9 v9.18.0

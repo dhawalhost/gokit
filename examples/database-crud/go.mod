@@ -3,8 +3,8 @@ module github.com/dhawalhost/gokit/examples/database-crud
 go 1.26.11
 
 require (
-	github.com/dhawalhost/gokit v0.10.0
-	github.com/dhawalhost/gokit/database v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
+	github.com/dhawalhost/gokit/database v0.11.0
 	github.com/go-chi/chi/v5 v5.4.0
 	go.uber.org/zap v1.27.1
 	gorm.io/gorm v1.31.2
@@ -15,7 +15,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dhawalhost/gokit/x v0.10.0 // indirect
+	github.com/dhawalhost/gokit/x v0.11.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/go-chi/cors v1.2.2 // indirect

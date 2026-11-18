@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+---
+
+## [v0.11.0] - 2026-11-18
+
+### Added
+
+- **`ratelimit` & `middleware`**: Added `ratelimit.Result`, `DetailedStore` interface with `AllowN(ctx, key, n)`, and constant-space GCRA variable token cost in `RedisStore` via `ARGV[3]`. Added `middleware.RateLimit` options: `FallbackStore`, `FallbackNodeCount` (enforcing `limit / nodes` local budget on backend failure), `CostFunc`, and emission of `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and dynamic `Retry-After` headers.
+- **`idempotency`**: Added post-lock `Store.Get` double-check to eliminate TOCTOU window between initial check and lock acquisition; added payload hash mismatch guard returning `422 Unprocessable Entity` (`IDEMPOTENCY_KEY_MISMATCH`).
+- **`idgen`**: Added `WithMaxBackwardDrift` spin-wait tolerance to `ShardIDGenerator` against NTP clock rewinds; added canonical `EncodeBase62`, `DecodeBase62`, and reversible 63-bit Feistel permutation `ObfuscateID` / `DeobfuscateID` for sequential-to-opaque ID translation.
+- **`circuitbreaker`**: Added `ResetTimeoutJitter` to prevent half-open probe stampedes, and `SlowCallThreshold` to count high-latency requests toward failure ratio.
+- **`client`**: Added sliding-window `RetryBudget` (`NewRetryBudget`, `WithRetryBudget`) to prevent retry amplification storms.
+- **`bulkhead`**: Added `MaxQueueWait` bounded queue wait timer returning `ErrBulkheadFull` on timeout.
+- **`x/saga`**: Added persistent checkpoint `Store` interface (`SaveState`), `WithID`, and `WithStore` for durable step state and compensation recovery.
+- **`x/diagnostics`**: Fixed `VerifyNoGoroutineLeak` snapshot keying by goroutine ID to eliminate false positives caused by runtime goroutine state transitions (`running` to `chan receive`).
+- **`SYSTEM_DESIGN.md`**: Fixed Blueprint 14 money representation to `BalanceCents int64` / `AmountCents int64`; added 15 comprehensive architecture sections covering rate limiting, cascading failure prevention, SLO observability, distributed IDs, security/ReBAC, payments/ledgers, storage/DR, job scheduling, feeds, chat, search, video, ride-hailing, and senior design playbooks.
+
 ### Changed
 
 - **Module Architecture (Phase 4)**: Split `gokit` into a slim core module (`github.com/dhawalhost/gokit`) with zero AWS SDK, Kafka, RabbitMQ, pgx, or GORM dependencies, isolated adapter sub-modules (`database`, `outbox`, `storage/s3`, `eventbus/kafka`, `eventbus/rabbitmq`), an extended module (`github.com/dhawalhost/gokit/x` containing `bloomfilter`, `compression`, `diagnostics`, `eventstore`, `gateway`, `i18n`, `migration`, `notify`, `pipeline`, `saga`, `search`, `session`, and `workflow`), and standalone example/integration modules (`examples/database-crud`, `examples/enterprise-service`, `test/integration`).
@@ -15,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **Breaking (`multitenancy`)**: Decoupled `multitenancy` from `gorm.io/gorm`; converted `Scope` and `ScopeFromContext` to generic query-builder functions and updated `SetRLS` / `WithTenantTx` to work cleanly with both `database/sql` handles and ORM handles without importing GORM.
 - **Breaking (`storage/s3`)**: Moved `S3Storage` and `S3Config` out of `gokit/storage` into `github.com/dhawalhost/gokit/storage/s3` (preserving `NewS3`/`S3Config` and adding `New`/`Config`/`Storage` aliases).
 - **Breaking (`eventbus`)**: Decoupled `eventbus.NewOutboxPublisher` from importing `gokit/outbox` directly; it now returns `*OutboxPublisherAdapter` directly, which satisfies `outbox.Publisher`.
+- **Dependencies**: Bumped `github.com/go-chi/chi/v5` to `v5.4.0` across root and examples; upgraded `golang.org/x/net` (`v0.63.0`) and `golang.org/x/crypto` (`v0.59.0`), fixing 6 reported vulnerabilities.
 - **Documentation & Tooling**: Clarified in-process vs. multi-node persistence semantics in `x/session`, `x/eventstore`, `x/workflow`, and `x/saga`; removed unverified `SOC2`/`HIPAA`/`ISO 27001`/`IETF-compliant` certification claims; updated `README.md`, `Makefile`, `.githooks/pre-commit`, and `.github/workflows/ci.yml` for multi-module verification.
 
 ---

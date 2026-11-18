@@ -3,8 +3,8 @@ module github.com/dhawalhost/gokit/examples/enterprise-service
 go 1.26.11
 
 require (
-	github.com/dhawalhost/gokit v0.10.0
-	github.com/dhawalhost/gokit/outbox v0.10.0
+	github.com/dhawalhost/gokit v0.11.0
+	github.com/dhawalhost/gokit/outbox v0.11.0
 	go.uber.org/zap v1.27.1
 )
 

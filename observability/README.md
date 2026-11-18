@@ -122,12 +122,12 @@ Initialize OTLP export and propagate trace context to outbound services:
 shutdown, err := observability.InitTracer(ctx, config.TelemetryConfig{
     Enabled:        true,
     ServiceName:    "ordersvc",
-    ServiceVersion: "v0.10.0",
+    ServiceVersion: "v0.11.0",
     Environment:    "production",
     OTLPEndpoint:   "otel-collector.internal:4318",
 },
     // observability.WithInsecure(), // Uncomment for plaintext local collector development
-    observability.WithServiceVersion("v0.10.0"),
+    observability.WithServiceVersion("v0.11.0"),
     observability.WithDeploymentEnvironment("production"),
 )
 defer shutdown(context.Background())
