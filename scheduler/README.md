@@ -16,7 +16,7 @@
        └───────────┼────────────┘        └───────────┼────────────┘
                    │                                 │
                    │   Try Acquire Lock              │   Try Acquire Lock
-                   │   ("job:billing-sync")          │   ("job:billing-sync")
+                   │   ("job:billing-sync:<tick>")   │   ("job:billing-sync:<tick>")
                    ▼                                 ▼
        ┌──────────────────────────────────────────────────────────┐
        │             Distributed Locker (Redis / DB)              │
@@ -25,11 +25,10 @@
                                     │
                ┌────────────────────┴────────────────────┐
                ▼                                         ▼
-      Lock Granted (Pod 1)                      Lock Denied (Pod 2)
-       - State: Running                          - State: Skipped
-       - Execute Job                             - Log & Record Metric
-       - Retries & Timeout                       - Await Next Tick
-       - Release Lock on Finish
+      Lock Granted (Pod 1)                      Lock Denied / Error (Pod 2)
+       - State: Running (+AutoRenew ttl/3)       - ErrLockHeld -> State: Skipped
+       - Execute Job (cancels on lock.Lost())    - Backend error -> OnJobFailure
+       - Stop renew; tick lock expires at TTL    - Await Next Tick
 ```
 
 ---
@@ -40,7 +39,7 @@
 - **Predefined Macros**: `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight`, and `@hourly`.
 - **Interval Specifications**: Flexible duration expressions like `@every 5m`, `@every 1h30m`, or programmatic `scheduler.Every(10 * time.Minute)`.
 - **Timezone Support**: Prefix expressions with `CRON_TZ=America/New_York` or `TZ=UTC`, or set the scheduler-wide default via `WithLocation()`.
-- **Distributed Leader Coordination**: Native integration with `distlock.Locker` (Redis, DB, etc.) ensures that in multi-replica deployments, exactly one pod executes each scheduled job run while others skip safely without error.
+- **Distributed Leader Coordination**: Native integration with `distlock.Locker` (Redis, DB, etc.) keys locks per scheduled tick (`<lockKey>:<tick_unix_nano>`), renews leases automatically (`ttl/3`) while jobs run, cancels the job context on `lock.Lost()`, retains scheduled tick locks until TTL expiry to prevent clock-skewed duplicate runs, and surfaces non-`ErrLockHeld` backend errors via `OnJobFailure` instead of silently skipping.
 - **Overlap Prevention**: Choose between `OverlapSkip` (skip tick if previous execution is still running) or `OverlapAllow`.
 - **Resilience & Fault Tolerance**:
   - Panic recovery ensures a crashing job never brings down the scheduler daemon.

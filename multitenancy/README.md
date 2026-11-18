@@ -7,15 +7,16 @@
 ## Features
 
 - **Context & HTTP Middleware**:
-  - `multitenancy.RequireTenant()`: Enforces the presence of an `X-Tenant-ID` header (or JWT claim) on all protected routes.
-  - Context helpers: `WithTenant(ctx, tenantID)` and `FromContext(ctx)`.
+  - `multitenancy.RequireTenant(opts...)`: Resolves tenant identity from authenticated JWT claims (`WithTenantClaim`, `WithTenantResolver`) or `X-Tenant-ID`, rejecting header/claim mismatches with `403 Forbidden` (opt-in `WithTrustHeader(true)` for trusted internal service-to-service hops).
+  - Context helpers: `WithTenantID(ctx, tenantID)` and `FromContext(ctx)`.
 - **GORM Query Scoping**:
   - `ScopeFromContext(ctx)`: Automatically injects `WHERE tenant_id = ?` into SELECT, UPDATE, and DELETE queries.
 - **PostgreSQL Row-Level Security (RLS)**:
   - `WithTenantTx(ctx, db, tenantID, fn)`: Safely sets the transaction-local tenant session variable via `SELECT set_config('app.current_tenant_id', ?, true)`.
   - Guarantees database-level enforcement even if application code omits a WHERE clause.
-- **Tenant-Scoped Caching (`ScopedCache`)**:
+- **Tenant-Scoped Caching (`ScopedCache` / `ContextScopedCache`)**:
   - Automatically isolates cache entries in shared Redis or in-memory caches by prepending a namespace prefix (`tenant:<tenant_id>:<key>`).
+  - Supports prefix-scoped eviction via `ClearTenant(ctx)` and `ClearPrefix(ctx, prefix)` using non-blocking `SCAN` + `UNLINK` instead of global `FLUSHDB`.
 
 ---
 
@@ -35,8 +36,12 @@ import (
 
 r := chi.NewRouter()
 
-// Rejects any request missing the X-Tenant-ID header with 401 Unauthorized
-r.Use(multitenancy.RequireTenant())
+// Enforces tenant identity on protected routes:
+// - Returns 400 Bad Request when tenant ID is missing (configurable via WithStatusCode).
+// - When JWT claims exist in context, returns 403 Forbidden if X-Tenant-ID != claim unless WithTrustHeader(true).
+r.Use(multitenancy.RequireTenant(
+    multitenancy.WithTenantClaim("tenant_id"),
+))
 
 r.Get("/api/v1/invoices", func(w http.ResponseWriter, r *http.Request) {
     tenantID, ok := multitenancy.FromContext(r.Context())
@@ -102,4 +107,9 @@ scopedCache := multitenancy.NewContextScopedCache(redisCache)
 
 // Key stored in Redis becomes: "tenant:acme-corp:user:101"
 err := scopedCache.Set(ctx, "user:101", userProfile, time.Hour)
+
+// Non-blocking SCAN + UNLINK eviction scoped only to this tenant or prefix:
+tenantCache := multitenancy.NewScopedCache(redisCache, "acme-corp")
+_ = tenantCache.ClearPrefix(ctx, "user:")
+_ = tenantCache.ClearTenant(ctx)
 ```

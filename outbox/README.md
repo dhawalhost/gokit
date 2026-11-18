@@ -72,6 +72,7 @@ CREATE TABLE outbox_messages (
 );
 
 CREATE INDEX idx_outbox_scheduled ON outbox_messages (status, scheduled_at);
+CREATE INDEX idx_outbox_topic ON outbox_messages (topic);
 ```
 
 ---
@@ -179,3 +180,4 @@ relay.Start(ctx)
 | `MaxBackoff` | `time.Duration` | `1m` | Cap on exponential retry backoff duration |
 | `Retention` | `time.Duration` | `7 * 24h` | How long published messages are retained before automated purging |
 | `CleanInterval` | `time.Duration` | `1h` | Frequency of running the retention cleanup job |
+| `Logger` | `*zap.Logger` | `logger.Global()` | Structured logger for background poll/publish/cleanup loop errors (tracked via `relay.Errors()`) |

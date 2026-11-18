@@ -6,11 +6,12 @@
 
 ## Features
 
-- **Safe Atomic Semantics**:
-  - Employs atomic Lua scripts for lock acquisition, release, and lease extension.
-  - Generates unique ownership tokens to guarantee that a worker never accidentally releases a lock acquired by another worker after expiration.
-- **Heartbeat Lease Auto-Renewal (`WithAutoRenew`)**:
-  - Automatically spins up a background goroutine to refresh the lease TTL while long-running jobs are executing, preventing premature lock forfeiture.
+- **Safe Atomic Semantics & Fencing Tokens**:
+  - Redis backend uses a single atomic Lua script (`SET NX PX` + `INCR`) with `{key}` Redis Cluster hash tags so lock acquisition and monotonic fencing token generation never race across cluster slots or fail silently.
+  - Employs atomic Lua scripts for lock release (`Unlock`) and lease extension (`Extend`) keyed on unique ownership tokens.
+- **Heartbeat Lease Auto-Renewal (`WithAutoRenew`) & Loss Detection (`Lost()`)**:
+  - Automatically spins up a background goroutine to refresh the lease TTL while long-running jobs are executing.
+  - Exposes `lock.Lost() <-chan struct{}` and automatically cancels `WithLock`'s callback context if background renewal fails so split-brain holders stop work immediately.
 - **Spin-Retries with Backoff (`WithRetry`)**:
   - Retries lock acquisition with configurable attempts, backoff intervals, and jitter when a lock is currently contended.
 - **Scoped Execution Guard (`WithLock`)**:
@@ -53,17 +54,22 @@ func RunDailyBilling(ctx context.Context, redisClient redis.UniversalClient) err
 
 ---
 
-### 2. Manual Lock Acquisition and Release
+### 2. Manual Lock Acquisition, Fencing Tokens, and Release
 
 ```go
-lock, err := locker.Acquire(ctx, "resource:invoice-101", 10*time.Second)
+lock, err := locker.Obtain(ctx, "resource:invoice-101", 10*time.Second)
 if err != nil {
-    // Lock is held by another process
+    // Lock is held by another process or backend failed
     return err
 }
-defer lock.Release(ctx)
+defer lock.Unlock(ctx)
 
-// Manually extend lock if needed
+if fenced, ok := lock.(distlock.FencedLock); ok {
+    fmt.Println("Fencing token:", fenced.FencingToken())
+}
+
+// Watch lock.Lost() when using WithAutoRenew to abort work if lease renewal fails
+// Manually extend lock if needed:
 _ = lock.Extend(ctx, 15*time.Second)
 ```
 

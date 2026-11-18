@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/dhawalhost/gokit.svg)](https://pkg.go.dev/github.com/dhawalhost/gokit)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dhawalhost/gokit)](https://goreportcard.com/report/github.com/dhawalhost/gokit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.26.11+-00ADD8?logo=go)](https://go.dev/)
 
 **gokit** is the single-source-of-truth shared infrastructure library for all microservices in the `dhawalhost` ecosystem (leapmailr, wardseal, talentcurate, leverflag, and future services).
 
@@ -30,7 +30,7 @@
 | [`router`](router/README.md) | Chi router constructors and `ServiceRouter` mount interface |
 | [`middleware`](middleware/README.md) | 11 composable middlewares: RequestID, Logger, Recovery, CORS, JWT, APIKey, TenantID, RateLimit, Timeout, SecureHeaders, Idempotency |
 | [`idempotency`](idempotency/README.md) | IETF-compliant idempotency control with SHA-256 payload anti-collision, in-flight locking, and Redis/in-memory backends |
-| [`ratelimit`](ratelimit/README.md) | `Store` interface with in-memory token-bucket and Redis sliding-window backends |
+| [`ratelimit`](ratelimit/README.md) | `Store` interface with in-memory token-bucket and Redis GCRA backends |
 | [`circuitbreaker`](circuitbreaker/README.md) | Thread-safe closed/open/half-open circuit breaker |
 | [`logger`](logger/README.md) | Zap wrapper with automatic sensitive key masking (`********`), global singleton, and context helpers |
 | [`config`](config/README.md) | Viper-backed config loader with hot-reloading (`NewManager`), secret auto-masking, `APP_*` env prefix, and YAML/.env support |
@@ -321,7 +321,7 @@ r.Use(idempotency.Middleware(idempotency.Config{
 // In-memory
 store := ratelimit.NewInMemoryStore()
 
-// Redis sliding window
+// Redis GCRA rate limiter
 store := ratelimit.NewRedisStore(redisClient, time.Minute)
 ```
 
@@ -352,6 +352,8 @@ httpClient := client.New(
     client.WithBaseURL("https://api.payments.internal"),
     client.WithTimeout(10 * time.Second),
     client.WithCircuitBreaker(cb),
+    // DefaultRetryPolicy retries idempotent methods (GET, HEAD, OPTIONS, PUT, DELETE) by default.
+    // Non-idempotent methods like POST are retried only when Idempotency-Key is set or WithRetryNonIdempotent(true) is enabled.
     client.WithRetryPolicy(client.DefaultRetryPolicy()), // 3 retries, exponential backoff, full jitter, 5xx/429
     client.WithTracePropagation(true),                  // injects W3C tracecontext headers
     client.WithRequestIDPropagation(true),             // forwards X-Request-ID from context
@@ -944,6 +946,9 @@ Nested keys use `_` as separator (e.g. `APP_SERVER_ADDR`).
 | `APP_TELEMETRY_ENABLED` | bool | `false` | Enable OTLP tracing |
 | `APP_TELEMETRY_OTLP_ENDPOINT` | string | — | OTLP collector endpoint |
 | `APP_TELEMETRY_SERVICE_NAME` | string | — | Service name for traces |
+| `APP_TELEMETRY_SERVICE_VERSION` | string | — | `service.version` resource attribute |
+| `APP_TELEMETRY_ENVIRONMENT` | string | — | `deployment.environment` resource attribute |
+| `APP_TELEMETRY_INSECURE` | bool | `false` | Allow plaintext HTTP OTLP transport (TLS enabled by default) |
 
 ---
 

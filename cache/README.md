@@ -8,8 +8,11 @@
 
 - **Universal Topology Routing**:
   - Automatically configures connection pools for single node, Sentinel failover pairs, or multi-shard Redis Clusters.
-- **Cluster-Safe Batch Deletions**:
+- **Cluster-Safe Batch Deletions & Prefix Clearing (`PrefixClearer`)**:
   - Automatically splits multi-key delete operations across hash slots using pipelining, avoiding cross-slot Redis Cluster errors.
+  - `ClearPrefix(ctx, prefix)` clears keys matching a namespace prefix via non-blocking `SCAN` + `UNLINK` without touching unrelated keys (prefer over deprecated `Flush`).
+- **Atomic Compare-and-Set Primitives (`AtomicLocker`)**:
+  - Implements `SetNX` and Lua-backed `CompareAndDelete` on `RedisCache` and `TwoTierCache` for safe distributed locking and idempotency guards.
 - **Direct Client Access**:
   - Provides escape hatches via `.Client()` to access the underlying `redis.UniversalClient` for advanced operations (e.g., Lua scripts, distributed locks, bloom filters).
 
@@ -53,6 +56,9 @@ func main() {
 
     // Pipelined cluster-safe multi-key delete
     _ = c.Delete(ctx, "k1", "k2", "k3")
+
+    // Prefix-scoped non-blocking eviction (leaves other key namespaces untouched)
+    _ = c.ClearPrefix(ctx, "session:")
 }
 ```
 

@@ -6,9 +6,12 @@
 
 ## Features
 
-- **Exponential Backoff with Full Jitter**:
-  - Automatically retries transient network errors and server errors (`429 Too Many Requests`, `500`, `502`, `503`, `504`).
+- **Exponential Backoff with Full Jitter & Method-Aware Retries**:
+  - Automatically retries transient network errors and retryable status codes (`408`, `429`, `500`, `502`, `503`, `504`) for idempotent HTTP methods (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`) by default.
+  - Non-idempotent methods (`POST`, `PATCH`) are retried only when an `Idempotency-Key` (or `X-Idempotency-Key`) header is present, `WithRetryNonIdempotent(true)` is configured, or a custom `RetryCondition` is set.
   - Full jitter prevents the "thundering herd" problem on downstream services recovering from an outage.
+- **Bounded Per-Attempt Timeouts (`WithAttemptTimeout`)**:
+  - Enforces individual attempt deadlines while keeping the attempt context alive until `resp.Body.Close()` so large response bodies can be read safely.
 - **`Retry-After` Header Adherence**:
   - Automatically respects standard HTTP `Retry-After` delay directives from rate-limited upstream services.
 - **Request Body Buffering & Replay**:
@@ -58,10 +61,12 @@ func main() {
         client.WithName("payment-service"),
         client.WithBaseURL("https://api.payments.internal"),
         client.WithTimeout(10*time.Second),
+        client.WithAttemptTimeout(3*time.Second),              // keeps attempt context alive until resp.Body.Close()
         client.WithCircuitBreaker(cb),
-        client.WithRetryPolicy(client.DefaultRetryPolicy()), // 3 retries, backoff, 5xx/429
-        client.WithTracePropagation(true),                  // W3C tracecontext headers
-        client.WithRequestIDPropagation(true),             // X-Request-ID forwarding
+        client.WithRetryPolicy(client.DefaultRetryPolicy()),     // retries GET/HEAD/OPTIONS/PUT/DELETE by default
+        client.WithDefaultHeader("Idempotency-Key", "req-123"), // or WithRetryNonIdempotent(true) to retry POST/PATCH
+        client.WithTracePropagation(true),                      // W3C tracecontext headers
+        client.WithRequestIDPropagation(true),                 // X-Request-ID forwarding
     )
 
     // 3. Make resilient POST request
@@ -85,8 +90,10 @@ func main() {
 |---|---|---|
 | `WithName(string)` | `"http-client"` | Identifier used in telemetry and log tags |
 | `WithBaseURL(string)` | `""` | Target service base URL |
-| `WithTimeout(time.Duration)` | `30s` | Maximum HTTP request timeout |
+| `WithTimeout(time.Duration)` | `30s` | Maximum HTTP request timeout across all attempts |
+| `WithAttemptTimeout(time.Duration)` | `0` | Per-attempt timeout; context stays active until `resp.Body.Close()` |
 | `WithCircuitBreaker(*CB)` | `nil` | Integrated circuit breaker instance |
-| `WithRetryPolicy(RetryPolicy)` | Default | Custom retry evaluator and backoff strategy |
+| `WithRetryPolicy(RetryPolicy)` | Default | Custom retry evaluator and backoff strategy (`GET`/`HEAD`/`OPTIONS`/`PUT`/`DELETE` by default) |
+| `WithRetryNonIdempotent(bool)` | `false` | Opt in to retrying non-idempotent methods (`POST`/`PATCH`) without `Idempotency-Key` |
 | `WithTracePropagation(bool)` | `true` | Automatically injects OpenTelemetry headers |
 | `WithRequestIDPropagation(bool)`| `true` | Automatically forwards `X-Request-ID` header |

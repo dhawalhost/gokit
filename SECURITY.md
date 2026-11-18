@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.10.x  | :white_check_mark: |
+| < 0.10  | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -66,7 +67,10 @@ When using gokit in production:
 gokit includes the following security features:
 
 - AES-256-GCM encryption
-- JWT HS256/RS256 signing and verification
+- JWT HS256/RS256/ECDSA verification with `iss`, `aud`, clock `leeway`, and cached JWKS rotation (`NewJWKSKeyFunc`)
+- Authenticated tenant claim binding (`TenantResolver`) preventing cross-tenant header spoofing
+- Trusted proxy `X-Forwarded-For` right-to-left IP extraction (`NewTrustedIPKeyFunc`)
+- OTLP trace exporter TLS-by-default (`WithInsecure` opt-in for local development)
 - bcrypt password hashing
 - Rate limiting (in-memory and Redis-backed)
 - Circuit breaker for fault tolerance

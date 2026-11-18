@@ -33,6 +33,8 @@
 package main
 
 import (
+    "context"
+    "errors"
     "fmt"
     "time"
 
@@ -41,20 +43,26 @@ import (
 
 func main() {
     cb := circuitbreaker.New(circuitbreaker.Config{
-        Name:         "payment-api",
-        MaxFailures:  5,               // Opens after 5 consecutive errors
-        ResetTimeout: 30 * time.Second, // Wait 30s before testing recovery in Half-Open
+        Name:                "payment-api",
+        MaxFailures:         5,                // Opens after 5 consecutive errors
+        ResetTimeout:        30 * time.Second, // Wait 30s before testing recovery in Half-Open
+        MaxHalfOpenRequests: 2,                // Bounds concurrent probe calls in Half-Open
+        FailureRatio:        0.5,              // Optional rolling-window error ratio threshold (50%)
+        MinRequests:         20,               // Minimum calls in RollingWindow before evaluating FailureRatio
+        RollingWindow:       60 * time.Second, // Rolling-window duration
+        ExecutionTimeout:    2 * time.Second,  // Optional per-call deadline passed into ExecuteCtx
         OnStateChange: func(name string, from, to circuitbreaker.State) {
+            // Invoked outside internal locks so calling cb.State() is deadlock-free
             fmt.Printf("Circuit %s state changed: %s -> %s\n", name, from, to)
         },
     })
 
-    // Execute downstream call guarded by the breaker
-    err := cb.Execute(func() error {
-        return callThirdPartyAPI()
+    // Execute downstream call guarded by the breaker (context-aware; cancels on ExecutionTimeout)
+    err := cb.ExecuteCtx(context.Background(), func(ctx context.Context) error {
+        return callThirdPartyAPI(ctx)
     })
 
-    if err == circuitbreaker.ErrCircuitOpen {
+    if errors.Is(err, circuitbreaker.ErrOpen) {
         // Handle fallback or return 503 Service Unavailable immediately
         fmt.Println("Downstream dependency unavailable, returning cached fallback")
     }

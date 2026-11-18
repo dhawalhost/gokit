@@ -12,7 +12,7 @@
   - Constant-time comparison (`crypto/hmac.Equal`) preventing timing attacks.
   - HTTP middleware for automatic signature validation before handler invocation.
 - **Outbound Dispatcher**:
-  - Automatically calculates and injects HMAC-SHA256 signatures and timestamps.
+  - Automatically calculates and injects HMAC-SHA256 signatures, timestamps, and a unique `Idempotency-Key` header per webhook delivery (reused identically across retry attempts).
   - Resilient dispatching powered by `gokit/client` with exponential backoff, jitter, and circuit breaking.
   - Granular delivery telemetry (`DeliveryResult`).
 
@@ -52,6 +52,8 @@ func main() {
 ---
 
 ### 2. Outbound Webhook Dispatcher (Sender)
+
+`Dispatch` automatically attaches HMAC-SHA256 signature headers (`X-Webhook-Signature`, `X-Webhook-Timestamp`) and a unique `Idempotency-Key` header per delivery (preserved across retries so non-idempotent `POST` deliveries retry safely).
 
 ```go
 package main

@@ -13,7 +13,7 @@
 - **Custom Metric Factories**: Fluent, validated registration helpers (`NewCounter`, `NewGauge`, `NewHistogram`, `MustNewHistogram`).
 - **Endpoint Security**: Turnkey `/metrics` HTTP handler with optional HTTP Basic Authentication.
 - **Distributed Tracing & Context Propagation**:
-  - OpenTelemetry OTLP HTTP trace exporter with configurable samplers (`WithSampler`) and composite W3C `TraceContext` + `Baggage` propagators.
+  - OpenTelemetry OTLP HTTP trace exporter using TLS by default (opt-in plaintext via `WithInsecure()` or `TelemetryConfig.Insecure`), defaulting to `ParentBased(TraceIDRatioBased(0.1))` sampling, honoring `OTEL_*` environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`), and supporting `WithSampler`, `WithServiceVersion`, and `WithDeploymentEnvironment`.
   - HTTP client transport wrapper (`TraceRoundTripper`, `NewInstrumentedHTTPClient`) injecting outbound trace headers.
   - Span helpers (`StartSpan`, `RecordError`, `AddEvent`, `SetAttributes`, `TraceID`, `SpanID`).
 
@@ -117,12 +117,19 @@ conn, err := grpc.Dial(addr,
 Initialize OTLP export and propagate trace context to outbound services:
 
 ```go
-// 1. Initialize OTLP tracer provider
+// 1. Initialize OTLP tracer provider (TLS and ParentBased 10% sampling enabled by default;
+//    also honors standard OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_RESOURCE_ATTRIBUTES env vars)
 shutdown, err := observability.InitTracer(ctx, config.TelemetryConfig{
-    Enabled:      true,
-    ServiceName:  "ordersvc",
-    OTLPEndpoint: "localhost:4318",
-})
+    Enabled:        true,
+    ServiceName:    "ordersvc",
+    ServiceVersion: "v0.10.0",
+    Environment:    "production",
+    OTLPEndpoint:   "otel-collector.internal:4318",
+},
+    // observability.WithInsecure(), // Uncomment for plaintext local collector development
+    observability.WithServiceVersion("v0.10.0"),
+    observability.WithDeploymentEnvironment("production"),
+)
 defer shutdown(context.Background())
 
 // 2. Instrument outbound HTTP client (automatically injects traceparent header)
