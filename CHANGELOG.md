@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Module Architecture (Phase 4)**: Split `gokit` into a slim core module (`github.com/dhawalhost/gokit`) with zero AWS SDK, Kafka, RabbitMQ, pgx, or GORM dependencies, isolated adapter sub-modules (`database`, `outbox`, `storage/s3`, `eventbus/kafka`, `eventbus/rabbitmq`), an extended module (`github.com/dhawalhost/gokit/x` containing `bloomfilter`, `compression`, `diagnostics`, `eventstore`, `gateway`, `i18n`, `migration`, `notify`, `pipeline`, `saga`, `search`, `session`, and `workflow`), and standalone example/integration modules (`examples/database-crud`, `examples/enterprise-service`, `test/integration`).
+- **Breaking (`pagination`)**: Decoupled `pagination` from `gorm.io/gorm`; replaced `(OffsetParams).Apply(*gorm.DB)` with generic `pagination.Apply(p, db)` and `(OffsetParams).Offset()`.
+- **Breaking (`multitenancy`)**: Decoupled `multitenancy` from `gorm.io/gorm`; converted `Scope` and `ScopeFromContext` to generic query-builder functions and updated `SetRLS` / `WithTenantTx` to work cleanly with both `database/sql` handles and ORM handles without importing GORM.
+- **Breaking (`storage/s3`)**: Moved `S3Storage` and `S3Config` out of `gokit/storage` into `github.com/dhawalhost/gokit/storage/s3` (preserving `NewS3`/`S3Config` and adding `New`/`Config`/`Storage` aliases).
+- **Breaking (`eventbus`)**: Decoupled `eventbus.NewOutboxPublisher` from importing `gokit/outbox` directly; it now returns `*OutboxPublisherAdapter` directly, which satisfies `outbox.Publisher`.
+- **Documentation & Tooling**: Clarified in-process vs. multi-node persistence semantics in `x/session`, `x/eventstore`, `x/workflow`, and `x/saga`; removed unverified `SOC2`/`HIPAA`/`ISO 27001`/`IETF-compliant` certification claims; updated `README.md`, `Makefile`, `.githooks/pre-commit`, and `.github/workflows/ci.yml` for multi-module verification.
+
 ---
 
 ## [v0.10.0] - 2026-11-18

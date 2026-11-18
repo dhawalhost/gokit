@@ -1,241 +1,85 @@
-.PHONY: test test-race lint tidy vet fmt build vuln cover coverage test-coverage hooks
+.PHONY: test test-race lint tidy tidy-diff vet fmt build vuln cover coverage test-coverage hooks test-integration
 
-# Run all unit tests.
+MODULES := . ./x ./database ./outbox ./storage/s3 ./eventbus/kafka ./eventbus/rabbitmq
+EXAMPLE_MODULES := ./examples/database-crud ./examples/enterprise-service
+ALL_MODULES := $(MODULES) $(EXAMPLE_MODULES) ./test/integration
+ROOT_DIR := $(CURDIR)
+
+# Run all unit tests across core, x, and adapter modules.
 test:
-	go test \
-		./audit/... \
-		./batcher/... \
-		./authz/... \
-		./bloomfilter/... \
-		./bulkhead/... \
-		./cache/... \
-		./circuitbreaker/... \
-		./client/... \
-		./compression/... \
-		./config/... \
-		./crypto/... \
-		./database/... \
-		./diagnostics/... \
-		./distlock/... \
-		./errors/... \
-		./eventbus/... \
-		./eventstore/... \
-		./featureflag/... \
-		./gateway/... \
-		./grpc/... \
-		./health/... \
-		./i18n/... \
-		./idempotency/... \
-		./idgen/... \
-		./jobqueue/... \
-		./loadshed/... \
-		./logger/... \
-		./middleware/... \
-		./migration/... \
-		./multitenancy/... \
-		./notify/... \
-		./observability/... \
-		./outbox/... \
-		./pagination/... \
-		./pipeline/... \
-		./ratelimit/... \
-		./response/... \
-		./router/... \
-		./saga/... \
-		./scheduler/... \
-		./search/... \
-		./session/... \
-		./secrets/... \
-		./server/... \
-		./storage/... \
-		./streaming/... \
-		./testutil/... \
-		./validator/... \
-		./webhook/... \
-		./workflow/...
+	@for m in $(MODULES); do \
+		echo "==> go test ($$m)"; \
+		(cd "$$m" && go test ./...) || exit 1; \
+	done
 
-# Run tests with the race detector.
+# Run tests with the race detector across core, x, and adapter modules.
 test-race:
-	go test -race \
-		./audit/... \
-		./batcher/... \
-		./authz/... \
-		./bloomfilter/... \
-		./bulkhead/... \
-		./cache/... \
-		./circuitbreaker/... \
-		./client/... \
-		./compression/... \
-		./config/... \
-		./crypto/... \
-		./database/... \
-		./diagnostics/... \
-		./distlock/... \
-		./errors/... \
-		./eventbus/... \
-		./eventstore/... \
-		./featureflag/... \
-		./gateway/... \
-		./grpc/... \
-		./health/... \
-		./i18n/... \
-		./idempotency/... \
-		./idgen/... \
-		./jobqueue/... \
-		./loadshed/... \
-		./logger/... \
-		./middleware/... \
-		./migration/... \
-		./multitenancy/... \
-		./notify/... \
-		./observability/... \
-		./outbox/... \
-		./pagination/... \
-		./pipeline/... \
-		./ratelimit/... \
-		./response/... \
-		./router/... \
-		./saga/... \
-		./scheduler/... \
-		./search/... \
-		./session/... \
-		./secrets/... \
-		./server/... \
-		./storage/... \
-		./streaming/... \
-		./testutil/... \
-		./validator/... \
-		./webhook/... \
-		./workflow/...
+	@for m in $(MODULES); do \
+		echo "==> go test -race ($$m)"; \
+		(cd "$$m" && go test -race ./...) || exit 1; \
+	done
 
-# Generate coverage report (opens in browser via 'go tool cover -html').
+# Generate coverage report for core module (opens in browser via 'go tool cover -html').
 cover:
-	go test -coverprofile=coverage.out -covermode=atomic \
-		./audit/... \
-		./batcher/... \
-		./authz/... \
-		./bloomfilter/... \
-		./bulkhead/... \
-		./cache/... \
-		./circuitbreaker/... \
-		./client/... \
-		./compression/... \
-		./config/... \
-		./crypto/... \
-		./database/... \
-		./diagnostics/... \
-		./distlock/... \
-		./errors/... \
-		./eventbus/... \
-		./eventstore/... \
-		./featureflag/... \
-		./gateway/... \
-		./grpc/... \
-		./health/... \
-		./i18n/... \
-		./idempotency/... \
-		./idgen/... \
-		./jobqueue/... \
-		./loadshed/... \
-		./logger/... \
-		./middleware/... \
-		./migration/... \
-		./multitenancy/... \
-		./notify/... \
-		./observability/... \
-		./outbox/... \
-		./pagination/... \
-		./pipeline/... \
-		./ratelimit/... \
-		./response/... \
-		./router/... \
-		./saga/... \
-		./scheduler/... \
-		./search/... \
-		./session/... \
-		./secrets/... \
-		./server/... \
-		./storage/... \
-		./streaming/... \
-		./testutil/... \
-		./validator/... \
-		./webhook/... \
-		./workflow/...
+	go test -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -html=coverage.out
 
-# Run tests and print coverage summary to terminal (without opening browser).
+# Run tests across all modules and print core module coverage summary.
 coverage test-coverage:
-	go test -coverprofile=coverage.out -covermode=atomic \
-		./audit/... \
-		./batcher/... \
-		./authz/... \
-		./bloomfilter/... \
-		./bulkhead/... \
-		./cache/... \
-		./circuitbreaker/... \
-		./client/... \
-		./compression/... \
-		./config/... \
-		./crypto/... \
-		./database/... \
-		./diagnostics/... \
-		./distlock/... \
-		./errors/... \
-		./eventbus/... \
-		./eventstore/... \
-		./featureflag/... \
-		./gateway/... \
-		./grpc/... \
-		./health/... \
-		./i18n/... \
-		./idempotency/... \
-		./idgen/... \
-		./jobqueue/... \
-		./loadshed/... \
-		./logger/... \
-		./middleware/... \
-		./migration/... \
-		./multitenancy/... \
-		./notify/... \
-		./observability/... \
-		./outbox/... \
-		./pagination/... \
-		./pipeline/... \
-		./ratelimit/... \
-		./response/... \
-		./router/... \
-		./saga/... \
-		./scheduler/... \
-		./search/... \
-		./session/... \
-		./secrets/... \
-		./server/... \
-		./storage/... \
-		./streaming/... \
-		./testutil/... \
-		./validator/... \
-		./webhook/... \
-		./workflow/...
+	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	@for m in $(filter-out .,$(MODULES)); do \
+		echo "==> go test -race ($$m)"; \
+		(cd "$$m" && go test -race ./...) || exit 1; \
+	done
 	@go tool cover -func=coverage.out | tail -n 1
 
 lint:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --tests=false --timeout=15m ./...
+	@for m in $(MODULES); do \
+		echo "==> golangci-lint ($$m)"; \
+		(cd "$$m" && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --config="$(ROOT_DIR)/.golangci.yml" --tests=false --timeout=15m ./...) || exit 1; \
+	done
 
 tidy:
-	go mod tidy
+	@for m in $(ALL_MODULES); do \
+		echo "==> go mod tidy ($$m)"; \
+		(cd "$$m" && go mod tidy) || exit 1; \
+	done
+
+tidy-diff:
+	@for m in $(ALL_MODULES); do \
+		echo "==> go mod tidy -diff ($$m)"; \
+		(cd "$$m" && go mod tidy -diff) || exit 1; \
+	done
 
 vet:
-	go vet ./...
+	@for m in $(MODULES) $(EXAMPLE_MODULES); do \
+		echo "==> go vet ($$m)"; \
+		(cd "$$m" && go vet ./...) || exit 1; \
+	done
+	@echo "==> go vet -tags=integration (./test/integration)"
+	@(cd ./test/integration && go vet -tags=integration ./...)
 
 fmt:
 	gofmt -w .
 
 build:
-	go build ./...
+	@for m in $(MODULES); do \
+		echo "==> go build ($$m)"; \
+		(cd "$$m" && go build ./...) || exit 1; \
+	done
+	@for m in $(EXAMPLE_MODULES); do \
+		echo "==> go build ($$m)"; \
+		(cd "$$m" && go build -o /dev/null ./...) || exit 1; \
+	done
+	@echo "==> compile integration tests (./test/integration)"
+	@(cd ./test/integration && go test -tags=integration -c . -o /dev/null)
 
 # Check for known vulnerabilities (requires: go install golang.org/x/vuln/cmd/govulncheck@latest).
 vuln:
-	govulncheck ./...
+	@for m in $(MODULES); do \
+		echo "==> govulncheck ($$m)"; \
+		(cd "$$m" && govulncheck ./...) || exit 1; \
+	done
 
 # Install repository git hooks.
 hooks:
@@ -247,4 +91,4 @@ hooks:
 test-integration:
 	@echo "Running integration tests (requires PostgreSQL and Redis)..."
 	@echo "Set TEST_DATABASE_DSN and TEST_REDIS_ADDR environment variables"
-	go test -tags=integration -v ./test/integration/...
+	cd ./test/integration && go test -tags=integration -v ./...
