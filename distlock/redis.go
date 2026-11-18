@@ -158,9 +158,16 @@ func (l *RedisLock) Extend(ctx context.Context, ttl time.Duration) error {
 	return nil
 }
 
-// WithLock acquires a lock, runs fn, and guarantees release of the lock.
+// WithLock acquires a lock with auto-renewal enabled, runs fn with a context that
+// cancels if the lock is lost, and guarantees release of the lock upon completion.
 func (r *RedisLocker) WithLock(ctx context.Context, key string, ttl time.Duration, fn func(ctx context.Context) error, opts ...Option) error {
-	lock, err := r.Obtain(ctx, key, ttl, opts...)
+	effectiveOpts := make([]Option, 0, len(opts)+1)
+	if ttl > 0 {
+		effectiveOpts = append(effectiveOpts, WithAutoRenew(ttl/3))
+	}
+	effectiveOpts = append(effectiveOpts, opts...)
+
+	lock, err := r.Obtain(ctx, key, ttl, effectiveOpts...)
 	if err != nil {
 		return err
 	}
@@ -168,5 +175,18 @@ func (r *RedisLocker) WithLock(ctx context.Context, key string, ttl time.Duratio
 		_ = lock.Unlock(context.Background())
 	}()
 
-	return fn(ctx)
+	fnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-lock.Lost():
+			cancel()
+		case <-done:
+		}
+	}()
+
+	return fn(fnCtx)
 }

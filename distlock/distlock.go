@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,8 @@ type Lock interface {
 	Unlock(ctx context.Context) error
 	// Extend extends the validity of the lock by the given duration.
 	Extend(ctx context.Context, ttl time.Duration) error
+	// Lost returns a channel that is closed if background lock renewal fails and ownership may be lost.
+	Lost() <-chan struct{}
 }
 
 // FencedLock represents an acquired lock that also exposes a monotonically increasing fencing token.
@@ -103,6 +106,9 @@ type BaseLock struct {
 	fencingToken int64
 	renewStop    chan struct{}
 	renewDone    chan struct{}
+	lostCh       chan struct{}
+	lostOnce     sync.Once
+	renewErrors  atomic.Uint64
 	renewMu      sync.Mutex
 	isRenewing   bool
 }
@@ -121,6 +127,7 @@ func NewBaseLock(key, token string, ttl time.Duration, fencingToken ...int64) *B
 		token:        token,
 		ttl:          ttl,
 		fencingToken: fToken,
+		lostCh:       make(chan struct{}),
 	}
 }
 
@@ -144,13 +151,36 @@ func (l *BaseLock) TTL() time.Duration {
 	return l.ttl
 }
 
+func (l *BaseLock) ensureLostCh() chan struct{} {
+	l.renewMu.Lock()
+	defer l.renewMu.Unlock()
+	if l.lostCh == nil {
+		l.lostCh = make(chan struct{})
+	}
+	return l.lostCh
+}
+
+// Lost returns a channel that is closed if background lock renewal fails.
+func (l *BaseLock) Lost() <-chan struct{} {
+	return l.ensureLostCh()
+}
+
+// RenewErrors returns the number of failed background renewal attempts.
+func (l *BaseLock) RenewErrors() uint64 {
+	return l.renewErrors.Load()
+}
+
 // StartAutoRenew starts a background goroutine that periodically calls renewFn.
+// If renewFn returns an error, Lost() is closed and renewal stops.
 func (l *BaseLock) StartAutoRenew(ctx context.Context, interval time.Duration, renewFn func(ctx context.Context, ttl time.Duration) error) {
 	l.renewMu.Lock()
 	defer l.renewMu.Unlock()
 
 	if l.isRenewing {
 		return
+	}
+	if l.lostCh == nil {
+		l.lostCh = make(chan struct{})
 	}
 
 	if interval <= 0 {
@@ -163,6 +193,7 @@ func (l *BaseLock) StartAutoRenew(ctx context.Context, interval time.Duration, r
 	l.renewStop = make(chan struct{})
 	l.renewDone = make(chan struct{})
 	l.isRenewing = true
+	lostCh := l.lostCh
 
 	go func() {
 		defer close(l.renewDone)
@@ -173,8 +204,13 @@ func (l *BaseLock) StartAutoRenew(ctx context.Context, interval time.Duration, r
 			select {
 			case <-ticker.C:
 				renewCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.ttl)
-				_ = renewFn(renewCtx, l.ttl)
+				err := renewFn(renewCtx, l.ttl)
 				cancel()
+				if err != nil {
+					l.renewErrors.Add(1)
+					l.lostOnce.Do(func() { close(lostCh) })
+					return
+				}
 			case <-l.renewStop:
 				return
 			case <-ctx.Done():

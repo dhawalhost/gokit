@@ -461,8 +461,6 @@ func TestLock_EdgeCases_TableDriven(t *testing.T) {
 }
 
 func TestGK07_LockLossCancelsContext(t *testing.T) {
-	t.Skip("GK-07: pending fix")
-
 	s := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: s.Addr()})
 	defer func() { _ = rdb.Close() }()
@@ -489,6 +487,21 @@ func TestGK07_LockLossCancelsContext(t *testing.T) {
 	default:
 		t.Fatal("GK-07: fn context was not canceled within one renew interval after lock loss")
 	}
+
+	t.Run("Obtain exposes Lost channel closed on renewal failure", func(t *testing.T) {
+		lock, err := locker.Obtain(context.Background(), "gk07-direct", 150*time.Millisecond, distlock.WithAutoRenew(20*time.Millisecond))
+		if err != nil {
+			t.Fatalf("Obtain failed: %v", err)
+		}
+		defer func() { _ = lock.Unlock(context.Background()) }()
+
+		s.FlushAll()
+		select {
+		case <-lock.Lost():
+		case <-time.After(150 * time.Millisecond):
+			t.Fatal("GK-07: Lock.Lost() channel was not closed after key deletion")
+		}
+	})
 }
 
 func TestGK08_AtomicFencingTokenAndError(t *testing.T) {
