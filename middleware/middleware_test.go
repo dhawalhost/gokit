@@ -1131,26 +1131,49 @@ func TestGK04_TimeoutPanicAndLateWrite(t *testing.T) {
 }
 
 func TestGK10_RateLimitFailOpenAndFailClosed(t *testing.T) {
-	t.Skip("GK-10: pending fix")
-
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer func() { _ = rdb.Close() }()
 	store := ratelimit.NewRedisStore(rdb, time.Second)
 	mr.Close()
 
-	mw := middleware.RateLimit(middleware.RateLimitConfig{
+	beforeErrors := middleware.RateLimitStoreErrors()
+	var callbackErr error
+	mwOpen := middleware.RateLimit(middleware.RateLimitConfig{
 		RequestsPerSecond: 10,
 		Burst:             10,
 		Store:             store,
+		Logger:            zap.NewNop(),
+		OnStoreError: func(_ *http.Request, err error) {
+			callbackErr = err
+		},
 	})(noopHandler)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.1.2.3:1234"
 	rec := httptest.NewRecorder()
-	mw.ServeHTTP(rec, req)
+	mwOpen.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GK-10: expected default fail-open 200 OK when store is down, got %d", rec.Code)
 	}
+	if callbackErr == nil || middleware.RateLimitStoreErrors() <= beforeErrors {
+		t.Fatalf("GK-10: expected store error to be counted and reported, callbackErr=%v", callbackErr)
+	}
+
+	t.Run("fail-closed via FailClosed or FailOpen=false returns 503", func(t *testing.T) {
+		for _, cfg := range []middleware.RateLimitConfig{
+			{RequestsPerSecond: 10, Burst: 10, Store: store, FailClosed: true, Logger: zap.NewNop()},
+			{RequestsPerSecond: 10, Burst: 10, Store: store, FailOpen: middleware.Bool(false), Logger: zap.NewNop()},
+		} {
+			mwClosed := middleware.RateLimit(cfg)(noopHandler)
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "10.1.2.3:1234"
+			w := httptest.NewRecorder()
+			mwClosed.ServeHTTP(w, r)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("GK-10: expected 503 Service Unavailable when fail-closed, got %d", w.Code)
+			}
+		}
+	})
 }
