@@ -1,6 +1,6 @@
 // Package idempotency provides an HTTP middleware and storage backends
 // to prevent duplicate execution of mutating operations (e.g. POST, PUT, PATCH).
-// It adheres to IETF draft-ietf-httpapi-idempotency-key-header standards.
+// It is inspired by IETF draft-ietf-httpapi-idempotency-key-header semantics.
 package idempotency
 
 import (

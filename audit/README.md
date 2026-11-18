@@ -1,12 +1,12 @@
 # Audit (`gokit/audit`)
 
-`audit` provides a compliance-ready, structured audit logging framework designed for SOC 2, HIPAA, ISO 27001, and GDPR requirements. It records immutable security events with automatic context enrichment, sensitive data sanitization (PII, tokens, credentials), and non-blocking asynchronous sink pipelines.
+`audit` provides a structured security and operational audit logging framework for Go services. It records immutable audit events with automatic context enrichment, sensitive data redaction (PII, tokens, credentials), and non-blocking asynchronous sink pipelines.
 
 ---
 
 ## Features
 
-- **Structured Compliance Event Model**:
+- **Structured Security Audit Event Model**:
   - **Actor**: User ID, email, name, role, client IP, user agent.
   - **Action**: Hierarchical event name (e.g. `billing.invoice.void`, `iam.user.deprovision`).
   - **Resource**: Type, ID, name, and tenant boundary.

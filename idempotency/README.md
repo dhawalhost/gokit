@@ -1,6 +1,6 @@
 # Idempotency (`gokit/idempotency`)
 
-`idempotency` provides HTTP middleware implementing IETF-compliant request deduplication for mutating operations (`POST`, `PUT`, `PATCH`). It guarantees that duplicate API requests resulting from network timeouts or aggressive client retries execute exactly once without producing duplicate side-effects.
+`idempotency` provides HTTP middleware implementing request deduplication inspired by the IETF `Idempotency-Key` header draft (`draft-ietf-httpapi-idempotency-key-header`) for mutating operations (`POST`, `PUT`, `PATCH`). It guarantees that duplicate API requests resulting from network timeouts or aggressive client retries execute at most once while locked without producing duplicate side-effects.
 
 ---
 

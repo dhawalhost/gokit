@@ -7,7 +7,7 @@
 ## Features
 
 - **Unified Interface**: Single API contract for `Put`, `Get`, `Delete`, `DeleteMulti`, `Exists`, `Stat`, `List`, `PresignGet`, and `PresignPut`.
-- **Multi-Cloud S3-Compatible Driver**: Works out-of-the-box with AWS S3, Cloudflare R2, Google Cloud Storage (via S3 interop), and MinIO using `aws-sdk-go-v2`.
+- **Multi-Cloud S3-Compatible Driver (`github.com/dhawalhost/gokit/storage/s3`)**: Isolated sub-module working out-of-the-box with AWS S3, Cloudflare R2, Google Cloud Storage (via S3 interop), and MinIO using `aws-sdk-go-v2`, keeping the root `gokit/storage` package free of AWS SDK dependencies.
 - **Hardened Local FileSystem Driver**:
   - **Atomic Writes**: Writes to `.upload-*` temporary files in the target directory and renames atomically upon completion, preventing partially written files.
   - **Path Traversal Protection**: Enforces strict canonical key sandboxing, rejecting `..`, root prefixes, and null bytes with `ErrInvalidKey`.
@@ -39,7 +39,11 @@
 
 ## Quick Start
 
-### 1. AWS S3 / Cloudflare R2 / MinIO
+### 1. AWS S3 / Cloudflare R2 / MinIO (`github.com/dhawalhost/gokit/storage/s3`)
+
+```bash
+go get github.com/dhawalhost/gokit/storage/s3
+```
 
 ```go
 package main
@@ -51,13 +55,14 @@ import (
 	"time"
 
 	"github.com/dhawalhost/gokit/storage"
+	"github.com/dhawalhost/gokit/storage/s3"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// Connect to AWS S3 (or MinIO / Cloudflare R2 via Endpoint)
-	store, err := storage.NewS3(ctx, storage.S3Config{
+	store, err := s3.New(ctx, s3.Config{
 		Bucket:          "my-production-bucket",
 		Region:          "us-east-1",
 		Endpoint:        "http://minio:9000", // Optional: MinIO or R2 endpoint

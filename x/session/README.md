@@ -1,14 +1,15 @@
-# `session`: Distributed Secure Session Management
+# `session`: HTTP Session Management
 
-`session` provides an enterprise-grade HTTP session management suite for Go microservices. It features pluggable storage backends (in-memory with TTL eviction, stateless AES-256-GCM encrypted cookies, and Redis adapters), anti-session-hijacking validation, sliding inactivity expiration, one-time flash data, and session regeneration to eliminate fixation vulnerabilities.
+`session` provides HTTP session management for Go services with pluggable storage backends (`MemoryStore` for single-process in-memory sessions and `CookieStore` for stateless AES-256-GCM encrypted cookies), anti-session-hijacking validation, sliding inactivity expiration, one-time flash data, and session regeneration to eliminate fixation vulnerabilities. Shared server-side storage across multiple instances requires implementing the `session.Store` interface.
 
 ---
 
 ## Key Features
 
 - **Pluggable Storage Backends**:
-  - `MemoryStore`: High-performance in-memory cache with concurrent active eviction workers.
+  - `MemoryStore`: Single-process in-memory store with concurrent active eviction workers.
   - `CookieStore`: Stateless client-side encrypted sessions using authenticated AES-256-GCM.
+  - Custom `session.Store`: Implement `Store` if you need shared multi-replica server-side session storage.
 - **Session Hijacking Defense**: Validates client IP subnet (`/24` IPv4, `/48` IPv6) and User-Agent fingerprint hashes across requests to detect stolen session tokens.
 - **Session Fixation Immunity**: `session.Regenerate()` rotates the session token while preserving underlying session data upon privilege level elevation (e.g. login).
 - **Dual Expiration Windows**:
@@ -47,7 +48,7 @@
                                                │
                                                ▼
                                    Backend Storage Commit
-                               (Memory / Encrypted Cookie / Redis)
+                               (Memory / Encrypted Cookie)
 ```
 
 ---

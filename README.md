@@ -24,59 +24,80 @@
 
 ## Package Overview
 
+### Core Module (`github.com/dhawalhost/gokit`)
+
+Importing the core module pulls **no** AWS SDK, Kafka, RabbitMQ, GORM, or pgx dependencies.
+
 | Package | Description |
 |---|---|
 | [`server`](server/README.md) | `HTTPServer` wrapping `net/http` with chi, graceful shutdown, optional TLS |
 | [`router`](router/README.md) | Chi router constructors and `ServiceRouter` mount interface |
 | [`middleware`](middleware/README.md) | 11 composable middlewares: RequestID, Logger, Recovery, CORS, JWT, APIKey, TenantID, RateLimit, Timeout, SecureHeaders, Idempotency |
-| [`idempotency`](idempotency/README.md) | IETF-compliant idempotency control with SHA-256 payload anti-collision, in-flight locking, and Redis/in-memory backends |
+| [`idempotency`](idempotency/README.md) | Request deduplication inspired by the IETF `Idempotency-Key` draft with SHA-256 payload anti-collision, atomic locking, and Redis/in-memory backends |
 | [`ratelimit`](ratelimit/README.md) | `Store` interface with in-memory token-bucket and Redis GCRA backends |
-| [`circuitbreaker`](circuitbreaker/README.md) | Thread-safe closed/open/half-open circuit breaker |
+| [`circuitbreaker`](circuitbreaker/README.md) | Thread-safe closed/open/half-open circuit breaker with rolling-window failure ratio and `ExecuteCtx` |
 | [`logger`](logger/README.md) | Zap wrapper with automatic sensitive key masking (`********`), global singleton, and context helpers |
 | [`config`](config/README.md) | Viper-backed config loader with hot-reloading (`NewManager`), secret auto-masking, `APP_*` env prefix, and YAML/.env support |
-| [`database`](database/README.md) | GORM v2 + pgxpool combined `DB` struct with pool management and migration helpers |
-| [`diagnostics`](diagnostics/README.md) | Runtime memory watchdog, automated watermark heap dumping, goroutine leak detector, and authenticated pprof |
-| [`cache`](cache/README.md) | `Cache` interface with Redis backend |
+| [`cache`](cache/README.md) | `Cache`, `AtomicLocker`, and `PrefixClearer` interfaces with Redis and two-tier backends |
 | [`crypto`](crypto/README.md) | AES-256-GCM, bcrypt, constant-time HMAC, JWT HS256/RS256, timing-safe PKCE, secure random |
+| [`crypto/kms`](crypto/kms/README.md) | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
 | [`errors`](errors/README.md) | Structured `AppError` with HTTP status codes, safe `Wrap` error encapsulation, and JSON writing |
 | [`response`](response/README.md) | Generic `Response[T]` and `PaginatedResponse[T]` helpers |
 | [`validator`](validator/README.md) | go-playground/validator wrapper with JSON bind |
 | [`health`](health/README.md) | Liveness and readiness HTTP handlers with named checkers |
-| [`observability`](observability/README.md) | Prometheus metrics with route pattern cardinality protection, OTLP tracing, and chi-compatible middlewares |
-| [`pagination`](pagination/README.md) | Offset and cursor pagination parsed from HTTP requests |
+| [`observability`](observability/README.md) | Prometheus metrics with route pattern cardinality protection, OTLP TLS-by-default tracing, and chi/gRPC middlewares |
+| [`pagination`](pagination/README.md) | Offset and cursor pagination parsers with generic `Apply` helper |
 | [`idgen`](idgen/README.md) | UUID v4/v7, ULID, NanoID generation |
-| [`bloomfilter`](bloomfilter/README.md) | In-memory and Redis-backed Bloom filter for probabilistic set membership |
-| [`client`](client/README.md) | Resilient outbound HTTP client with jittered exponential backoff, circuit breaker integration, tracing, and body replay |
-| [`compression`](compression/README.md) | Multi-codec HTTP middleware and streaming compression (Zstandard, Brotli, Gzip, Deflate) with `sync.Pool` buffer recycling |
-| [`distlock`](distlock/README.md) | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend, auto-renewal keep-alive, and spin-retries |
-| [`audit`](audit/README.md) | SOC2/HIPAA-ready audit trail recording with Actor/Action/Resource models, PII masking, and async sinks |
-| [`outbox`](outbox/README.md) | Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
-| [`eventbus`](eventbus/README.md) | Resilient Pub/Sub event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
-| [`eventstore`](eventstore/README.md) | Event Sourcing & CQRS engine with append-only streams, optimistic concurrency, snapshotting, and projection catch-up |
+| [`client`](client/README.md) | Resilient outbound HTTP client with method-aware jittered backoff, circuit breaker integration, tracing, and body replay |
+| [`distlock`](distlock/README.md) | Distributed locking primitives (Redis & In-Memory) with atomic Lua unlock/extend/fencing, auto-renewal `Lost()`, and spin-retries |
+| [`audit`](audit/README.md) | Structured security and operational audit logging with Actor/Action/Resource models, PII masking, and async sinks |
+| [`eventbus`](eventbus/README.md) | Publish/Subscribe event bus with in-memory wildcard routing, Redis Streams consumer groups, middlewares, and outbox adapter |
 | [`jobqueue`](jobqueue/README.md) | Asynchronous background task runner with priority scheduling, worker pools, delayed jobs, and retry backoff |
-| [`featureflag`](featureflag/README.md) | OpenFeature-compatible feature flag engine with deterministic canary rollouts and contextual targeting |
-| [`webhook`](webhook/README.md) | Inbound HMAC-SHA256 signature verification & outbound resilient webhook dispatcher with retries |
-| [`saga`](saga/README.md) | Distributed transaction orchestrator with forward step execution and automated reverse compensations |
+| [`featureflag`](featureflag/README.md) | Feature flag evaluation engine with deterministic canary rollouts and contextual targeting |
+| [`webhook`](webhook/README.md) | Inbound HMAC-SHA256 signature verification & outbound webhook dispatcher with retries and `Idempotency-Key` |
 | [`bulkhead`](bulkhead/README.md) | Semaphore-based concurrency limiter & tenant resource fair-sharing isolating downstream dependencies |
-| [`multitenancy`](multitenancy/README.md) | Enterprise multi-tenant data isolation: PostgreSQL RLS session variables, GORM query scopes, and scoped cache keys |
+| [`multitenancy`](multitenancy/README.md) | Multi-tenant isolation: claim-bound HTTP middleware, generic DB scoping / RLS helpers, and scoped cache keys |
 | [`authz`](authz/README.md) | Fine-grained RBAC/ABAC authorization enforcer, wildcard matching, and Chi middlewares |
-| [`crypto/kms`](crypto/kms/README.md) | Envelope encryption with per-record DEKs, AES-256-GCM, and master key provider interface |
-| [`notify`](notify/README.md) | Multipart MIME email builder, STARTTLS SMTP sender, template engine, and mock test drivers |
-| [`scheduler`](scheduler/README.md) | Distributed cron job scheduler with leader election via `distlock` across Kubernetes pods |
-| [`i18n`](i18n/README.md) | Internationalization with BCP 47 parsing, CLDR pluralization, JSON/YAML catalogs, and HTTP middleware |
-| [`workflow`](workflow/README.md) | Finite-State Machine (FSM) engine with conditional guards, lifecycle hooks, audit trail, and optimistic locking |
+| [`scheduler`](scheduler/README.md) | Distributed cron job scheduler with per-tick `distlock` coordination across replicas |
 | [`batcher`](batcher/README.md) | Micro-batching write buffer and request-coalescing DataLoader with memoization cache |
-| [`gateway`](gateway/README.md) | API Gateway reverse proxy, multi-strategy load balancing, and parallel scatter-gather BFF aggregator |
-| [`secrets`](secrets/README.md) | Dynamic secret management, leak-proof memory zeroing, multi-provider fallback, and TTL caching |
-| [`migration`](migration/README.md) | Standalone schema migration engine with embed.FS loading, dirty tracking, transactional DDL, and `distlock` integration |
-| [`search`](search/README.md) | Embedded in-memory full-text search engine with BM25 ranking, tokenizers, n-grams, fuzzy matching, and boolean queries |
-| [`session`](session/README.md) | Distributed HTTP session manager with anti-hijacking validation, sliding TTLs, flash data, and encrypted cookie stores |
-| [`pipeline`](pipeline/README.md) | Concurrent stream ETL pipeline, tumbling/sliding temporal windows, fan-in/fan-out, bounded backpressure, and dead-letter queues |
-| [`grpc`](grpc/README.md) | Production gRPC server and client primitives with interceptors for recovery, logging, tracing, validation, and circuit breaking |
+| [`secrets`](secrets/README.md) | Dynamic secret management, memory zeroing, multi-provider fallback, and TTL caching |
+| [`grpc`](grpc/README.md) | gRPC server and client primitives with interceptors for recovery, logging, tracing, validation, and circuit breaking |
 | [`loadshed`](loadshed/README.md) | Adaptive latency-based concurrency limiting and load shedding for HTTP and gRPC services |
-| [`storage`](storage/README.md) | Cloud-agnostic object storage abstraction with S3-compatible, local filesystem, and in-memory backends |
+| [`storage`](storage/README.md) | Object storage abstraction with local filesystem (atomic writes + HTTP presign) and in-memory backends |
 | [`streaming`](streaming/README.md) | Real-time Server-Sent Events (SSE) and WebSocket pub/sub hub with heartbeat keepalives |
 | [`testutil`](testutil/README.md) | Test helpers: logger, recorder, request builder, response assertions |
+
+### Adapter & Persistence Sub-Modules
+
+Isolated Go modules containing heavy driver/cloud SDK dependencies (`gorm.io/gorm`, `pgx`, `aws-sdk-go-v2`, `kafka-go`, `amqp091-go`):
+
+| Module | Description |
+|---|---|
+| [`database`](database/README.md) | `github.com/dhawalhost/gokit/database` — GORM v2 + `pgxpool` PostgreSQL handle, replica routing, and `x/migration` integration |
+| [`outbox`](outbox/README.md) | `github.com/dhawalhost/gokit/outbox` — Transactional Outbox pattern with GORM, row-level locking (`SKIP LOCKED`), and background retry relay |
+| [`storage/s3`](storage/README.md) | `github.com/dhawalhost/gokit/storage/s3` — S3-compatible object storage driver (`aws-sdk-go-v2`) for AWS S3, MinIO, R2, and GCS |
+| [`eventbus/kafka`](eventbus/kafka/README.md) | `github.com/dhawalhost/gokit/eventbus/kafka` — Pure-Go Apache Kafka & Redpanda adapter (`segmentio/kafka-go`) |
+| [`eventbus/rabbitmq`](eventbus/rabbitmq/README.md) | `github.com/dhawalhost/gokit/eventbus/rabbitmq` — RabbitMQ AMQP 0-9-1 broker adapter (`amqp091-go`) |
+
+### Extended Packages (`github.com/dhawalhost/gokit/x/...`)
+
+Experimental, in-process, and specialized utilities in a separate `go.mod`:
+
+| Package | Description |
+|---|---|
+| [`x/bloomfilter`](x/bloomfilter/README.md) | In-memory and Redis-backed Bloom filter for probabilistic set membership |
+| [`x/compression`](x/compression/README.md) | Multi-codec HTTP middleware and streaming compression (Zstandard, Brotli, Gzip, Deflate) with `sync.Pool` buffer recycling |
+| [`x/diagnostics`](x/diagnostics/README.md) | Runtime memory watchdog, automated watermark heap dumping, goroutine leak detector, and authenticated pprof |
+| [`x/eventstore`](x/eventstore/README.md) | Event Sourcing & CQRS primitives (ships in-memory stores; implement `Store` interfaces for multi-node persistence) |
+| [`x/gateway`](x/gateway/README.md) | Reverse proxy, load balancer, and parallel scatter-gather BFF aggregator |
+| [`x/i18n`](x/i18n/README.md) | Internationalization with BCP 47 parsing, CLDR pluralization, JSON/YAML catalogs, and HTTP middleware |
+| [`x/migration`](x/migration/README.md) | Standalone schema migration engine with `embed.FS` loading, dirty tracking, transactional DDL, and `distlock` coordination |
+| [`x/notify`](x/notify/README.md) | Multipart MIME email builder, STARTTLS SMTP sender, template engine, and mock test drivers |
+| [`x/pipeline`](x/pipeline/README.md) | Concurrent stream ETL pipeline, tumbling/sliding temporal windows, fan-in/fan-out, bounded backpressure, and DLQs |
+| [`x/saga`](x/saga/README.md) | In-process step orchestrator with forward execution and reverse compensations (non-persistent across restarts) |
+| [`x/search`](x/search/README.md) | Embedded in-memory full-text search engine with BM25 ranking, tokenizers, n-grams, fuzzy matching, and boolean queries |
+| [`x/session`](x/session/README.md) | HTTP session manager with subnet/UA anti-hijacking validation, sliding TTLs, flash data, in-memory store, and encrypted cookies |
+| [`x/workflow`](x/workflow/README.md) | Finite-State Machine (FSM) engine with conditional guards and optimistic versioning (ships in-memory store; custom `Store` supported) |
 
 ---
 
@@ -465,7 +486,7 @@ p := pagination.ParseOffsetParams(r)
 var users []User
 var total int64
 db.GORM.Model(&User{}).Count(&total)
-p.Apply(db.GORM).Find(&users)
+pagination.Apply(p, db.GORM).Find(&users)
 response.Paginated(w, r, users, p.ToPagination(total))
 ```
 
@@ -496,10 +517,10 @@ if err := v.Bind(r, &req); err != nil {
 }
 ```
 
-### `bloomfilter`
+### `x/bloomfilter`
 
 ```go
-import "github.com/dhawalhost/gokit/bloomfilter"
+import "github.com/dhawalhost/gokit/x/bloomfilter"
 
 // In-memory filter — single process, zero external deps.
 f, err := bloomfilter.New(
@@ -536,7 +557,7 @@ store.Delete(ctx) // reset
 
 ### `audit`
 
-Compliance-ready audit logging for SOC2, HIPAA, and ISO 27001 requirements with automatic context enrichment and PII masking:
+Structured security and operational audit logging with automatic context enrichment and PII masking:
 
 ```go
 import "github.com/dhawalhost/gokit/audit"
@@ -643,8 +664,8 @@ import "github.com/dhawalhost/gokit/multitenancy"
 // 1. Strict HTTP tenant enforcement middleware
 r.Use(multitenancy.RequireTenant())
 
-// 2. Scoped database queries (GORM scope or PostgreSQL RLS session injection)
-db.GORM.Scopes(multitenancy.ScopeFromContext(ctx)).Find(&invoices)
+// 2. Scoped database queries (generic query-builder scope or PostgreSQL RLS session injection)
+db.GORM.Scopes(multitenancy.ScopeFromContext[*gorm.DB](ctx)).Find(&invoices)
 
 err := multitenancy.WithTenantTx(ctx, db.GORM, tenantID, func(tx *gorm.DB) error {
     // Executes SET LOCAL app.current_tenant = tenantID

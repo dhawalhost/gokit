@@ -1,6 +1,6 @@
 # Enterprise Microservice Example
 
-This example demonstrates how to build an enterprise-grade, SOC2-compliant, multi-tenant microservice using `gokit`.
+This example demonstrates how to build a multi-tenant microservice using `gokit` with tenant scoping, RBAC/ABAC authorization, envelope encryption, distributed locking, transactional outbox, and structured audit logging.
 
 ---
 

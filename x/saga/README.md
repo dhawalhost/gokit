@@ -1,6 +1,6 @@
 # Saga (`gokit/saga`)
 
-`saga` provides a distributed transaction orchestrator implementing the **Saga Pattern** for microservices. It coordinates multi-step distributed workflows, ensuring eventual consistency by automatically executing compensating rollback actions in reverse order when any intermediate step fails.
+`saga` provides an in-memory multi-step transaction orchestrator implementing the **Saga Pattern** for Go services. It coordinates sequential steps within the active process and triggers compensating rollback actions in reverse order when an intermediate step fails. It does not persist saga execution state across process crashes or pod restarts.
 
 ---
 
@@ -22,6 +22,7 @@ Compensating Flow (Reverse Order):                       ▼
 
 ## Features
 
+- **In-Process Execution**: Coordinates forward steps and compensations in memory without durable state persistence across restarts.
 - **Automated Reverse Compensation**: Automatically tracks completed steps and triggers corresponding rollback actions in strict reverse topological order on failure.
 - **Detached Compensation Context**: Uses an isolated context for compensations so that even if the caller's request context timed out, rollbacks complete safely.
 - **Granular Diagnostics**: Returns an `ExecutionResult` logging execution durations, errors, and compensation statuses per step.

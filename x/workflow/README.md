@@ -1,6 +1,6 @@
 # workflow
 
-`workflow` provides an extensible, production-ready Finite-State Machine (FSM) and workflow orchestration engine for Go microservices. It features type-safe state transitions, conditional pre-condition guards, lifecycle hooks (`OnEnter`, `OnExit`, transition `Action`), audit trail logging, and version-based optimistic concurrency control.
+`workflow` provides a Finite-State Machine (FSM) and workflow orchestration engine for Go services. It features type-safe state transitions, conditional pre-condition guards, lifecycle hooks (`OnEnter`, `OnExit`, transition `Action`), audit trail logging, and version-based optimistic concurrency control. It ships with a built-in in-process `MemoryStore`; multi-node persistence requires providing a custom `workflow.Store` implementation.
 
 ---
 
@@ -73,7 +73,7 @@ When `engine.Fire(ctx, instanceID, event, payload)` is executed, the transition 
 - **Panic Isolation**: All user-provided guards, actions, and lifecycle hooks are shielded with panic recovery, recording errors without crashing worker goroutines.
 - **Audit Trail History**: Captures immutable audit entries for each transition with timestamps, execution durations, source/target states, and events.
 - **Optimistic Concurrency Control**: Uses monotonic `Version int64` increments to reject concurrent conflicting state mutations with `ErrOptimisticLockConflict`.
-- **Pluggable Persistence**: Decoupled `Store` interface with a built-in, thread-safe `MemoryStore` driver suitable for testing and single-node orchestration.
+- **Pluggable Persistence**: Decoupled `Store` interface with a built-in, thread-safe in-process `MemoryStore` driver suitable for single-process execution and testing; multi-node persistence requires implementing `workflow.Store`.
 - **Inspection & Query APIs**: Inspect valid upcoming transitions via `CanFire()` and list allowed triggers with `PermittedEvents()`.
 
 ---

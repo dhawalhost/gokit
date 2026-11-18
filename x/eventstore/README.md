@@ -1,13 +1,13 @@
 # `eventstore`: Event Sourcing & CQRS Engine
 
-`eventstore` provides an enterprise-grade Event Sourcing and CQRS (Command Query Responsibility Segregation) engine for Go microservices. It features append-only event streams, optimistic concurrency control, generic aggregate root rehydration, snapshotting strategies, and projection subscription managers.
+`eventstore` provides an Event Sourcing and CQRS (Command Query Responsibility Segregation) toolkit for Go services. It features append-only event streams, optimistic concurrency control, generic aggregate root rehydration, snapshotting strategies, and projection subscription managers. Built-in `MemoryStore`, `MemorySnapshotStore`, and `MemoryCheckpointStore` drivers operate in-process only; multi-node persistence requires implementing the `Store`, `SnapshotStore`, and `CheckpointStore` interfaces.
 
 ---
 
 ## Key Features
 
-- **Append-Only Event Streams**: Pure immutable logging of domain events with per-stream sequence versions and monotonic global positions.
-- **Optimistic Concurrency Control**: Strict version enforcement (`ExpectedVersionAny`, `ExpectedVersionNoStream`, `ExpectedVersionExact(v)`) preventing conflicting concurrent writes.
+- **Append-Only Event Streams**: Pure immutable logging of domain events with per-stream sequence versions and monotonic global positions (in-process via `MemoryStore`, or custom durable `Store`).
+- **Optimistic Concurrency Control**: Strict version enforcement (`ExpectedVersionAny`, `ExpectedVersionNoStream`, `ExpectedVersionExact(v)`) preventing conflicting concurrent writes within the configured store (single-process when using `MemoryStore`).
 - **Generic Aggregate Roots**: Type-safe `Repository[T AggregateRoot]` for rehydrating domain aggregates by replaying historical events.
 - **Automated Snapshotting**: Pluggable `SnapshotStore` and `SnapshotStrategy` (e.g. `EveryNEvents(100)`, `AlwaysSnapshot`) for sub-millisecond aggregate rehydration on long-lived event streams.
 - **CQRS Projections**: `SubscriptionManager` with checkpoint tracking (`CheckpointStore`) for historical catch-up and live event streaming into read models.
