@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dhawalhost/gokit/client"
+	"github.com/google/uuid"
 )
 
 // DeliveryResult contains diagnostic telemetry for an outbound webhook attempt.
@@ -47,6 +48,7 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 	retryPolicy.MaxRetries = cfg.MaxRetries
 	retryPolicy.InitialBackoff = cfg.BaseDelay
 	retryPolicy.MaxBackoff = cfg.BaseDelay * 10
+	retryPolicy.RetryNonIdempotent = true
 
 	cli := client.New(
 		client.WithName("webhook-dispatcher"),
@@ -75,6 +77,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, endpointURL string, payload [
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(DefaultHeaderSignature, signature)
 	req.Header.Set(DefaultHeaderTimestamp, timestamp)
+	req.Header.Set("Idempotency-Key", uuid.NewString())
 
 	resp, err := d.httpClient.Do(req)
 	duration := time.Since(start)
