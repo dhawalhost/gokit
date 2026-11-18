@@ -1,6 +1,6 @@
 module github.com/dhawalhost/gokit
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
@@ -18,7 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/klauspost/compress v1.18.0
+	github.com/klauspost/compress v1.20.4
 	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.23.2
