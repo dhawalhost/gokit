@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -81,13 +82,19 @@ func New(opts ...Option) *Client {
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
 
-	// Apply overall client timeout if configured and not already bounded
+	// Apply overall client timeout if configured and not already bounded.
+	// Note: cancel is attached to the returned response body (on success) or invoked
+	// immediately on error paths so streaming response reads are not canceled prematurely.
 	var cancel context.CancelFunc
 	if c.cfg.Timeout > 0 {
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			ctx, cancel = context.WithTimeout(ctx, c.cfg.Timeout)
-			defer cancel()
 			req = req.WithContext(ctx)
+		}
+	}
+	cancelIfSet := func() {
+		if cancel != nil {
+			cancel()
 		}
 	}
 
@@ -96,6 +103,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			_ = req.Body.Close()
+			cancelIfSet()
 			return nil, fmt.Errorf("client: read request body for retry: %w", err)
 		}
 		_ = req.Body.Close()
@@ -135,6 +143,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		if attempt > 0 && req.GetBody != nil {
 			newBody, err := req.GetBody()
 			if err != nil {
+				cancelIfSet()
 				return nil, fmt.Errorf("client: reset body for attempt %d: %w", attempt+1, err)
 			}
 			req.Body = newBody
@@ -146,6 +155,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		var err error
 
 		if c.cfg.CircuitBreaker != nil && c.cfg.CircuitBreaker.State() == circuitbreaker.StateOpen {
+			cancelIfSet()
 			return nil, fmt.Errorf("circuitbreaker: %s: %w", c.cfg.Name, circuitbreaker.ErrOpen)
 		}
 
@@ -193,6 +203,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 			case <-time.After(backoff):
 				continue
 			case <-ctx.Done():
+				cancelIfSet()
 				return nil, ctx.Err()
 			}
 		}
@@ -202,18 +213,63 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		break
 	}
 
+	if lastResp != nil && lastResp.Body != nil {
+		lastResp.Body = wrapCancelBody(lastResp.Body, cancel)
+	} else {
+		cancelIfSet()
+	}
+
 	return lastResp, lastErr
+}
+
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func wrapCancelBody(body io.ReadCloser, cancel context.CancelFunc) io.ReadCloser {
+	if body == nil || cancel == nil {
+		return body
+	}
+	return &cancelOnCloseBody{
+		ReadCloser: body,
+		cancel:     cancel,
+	}
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.cancel)
+	return err
 }
 
 // doSingleAttempt executes a single HTTP request attempt with optional attempt timeout.
 func (c *Client) doSingleAttempt(req *http.Request) (*http.Response, error) {
+	var attemptCancel context.CancelFunc
 	if c.cfg.AttemptTimeout > 0 {
-		attemptCtx, cancel := context.WithTimeout(req.Context(), c.cfg.AttemptTimeout)
-		defer cancel()
+		var attemptCtx context.Context
+		attemptCtx, attemptCancel = context.WithTimeout(req.Context(), c.cfg.AttemptTimeout)
 		req = req.WithContext(attemptCtx)
 	}
 
-	return c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if attemptCancel != nil {
+			attemptCancel()
+		}
+		return nil, err
+	}
+
+	if resp != nil && resp.Body != nil {
+		resp.Body = wrapCancelBody(resp.Body, attemptCancel)
+	} else if attemptCancel != nil {
+		attemptCancel()
+	}
+	return resp, nil
 }
 
 // resolveURL constructs the full URL using BaseURL if a relative path is provided.

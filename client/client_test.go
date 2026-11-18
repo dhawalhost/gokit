@@ -845,8 +845,6 @@ func TestClient_EdgeCases_TableDriven(t *testing.T) {
 }
 
 func TestGK05_AttemptTimeoutLargeBody(t *testing.T) {
-	t.Skip("GK-05: pending fix")
-
 	payload := bytes.Repeat([]byte("a"), 1<<20) // 1 MiB
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
