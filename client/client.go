@@ -179,7 +179,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		duration := time.Since(start)
 
 		// Check if the result is retryable
-		if attempt < c.cfg.Retry.MaxRetries && c.cfg.Retry.isRetryable(ctx, resp, err) {
+		if attempt < c.cfg.Retry.MaxRetries && c.cfg.Retry.isRetryable(ctx, req, resp, err) {
 			backoff := c.cfg.Retry.calculateBackoff(attempt, resp)
 
 			c.cfg.Logger.Warn("outbound HTTP request failed, retrying",

@@ -3,10 +3,12 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -82,8 +84,37 @@ func parseRetryAfter(val string) (time.Duration, bool) {
 	return 0, false
 }
 
+var defaultRetryableMethods = []string{
+	http.MethodGet,
+	http.MethodHead,
+	http.MethodOptions,
+	http.MethodPut,
+	http.MethodDelete,
+}
+
+func (rp *RetryPolicy) isMethodRetryable(req *http.Request) bool {
+	if rp.RetryNonIdempotent || req == nil {
+		return true
+	}
+	if req.Header.Get("Idempotency-Key") != "" || req.Header.Get("X-Idempotency-Key") != "" {
+		return true
+	}
+
+	methods := rp.RetryableMethods
+	if len(methods) == 0 {
+		methods = defaultRetryableMethods
+	}
+	method := strings.ToUpper(req.Method)
+	for _, m := range methods {
+		if strings.ToUpper(m) == method {
+			return true
+		}
+	}
+	return false
+}
+
 // isRetryable evaluates whether a response or error warrants a retry attempt.
-func (rp *RetryPolicy) isRetryable(ctx context.Context, resp *http.Response, err error) bool {
+func (rp *RetryPolicy) isRetryable(ctx context.Context, req *http.Request, resp *http.Response, err error) bool {
 	// If context was explicitly canceled or deadline exceeded, do not retry
 	if ctx != nil && ctx.Err() != nil {
 		return false
@@ -94,14 +125,20 @@ func (rp *RetryPolicy) isRetryable(ctx context.Context, resp *http.Response, err
 		return rp.RetryCondition(resp, err)
 	}
 
+	// Never retry non-idempotent methods unless an Idempotency-Key is present or explicitly opted in.
+	if !rp.isMethodRetryable(req) {
+		return false
+	}
+
 	// Network / connection errors
 	if err != nil {
-		// Check for connection refused, reset, or timeout
+		// Check for connection refused, reset, EOF, or timeout
 		var netErr net.Error
 		if errors.As(err, &netErr) {
 			return true
 		}
-		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+			errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return true
 		}
 		return false

@@ -25,6 +25,14 @@ type RetryPolicy struct {
 	Jitter bool
 	// RetryableStatusCodes specifies HTTP status codes that trigger a retry.
 	RetryableStatusCodes []int
+	// RetryableMethods specifies HTTP methods eligible for automatic retries.
+	// Defaults to idempotent methods: GET, HEAD, OPTIONS, PUT, DELETE.
+	// Non-idempotent methods (such as POST or PATCH) are only retried when an
+	// Idempotency-Key / X-Idempotency-Key header is present or RetryNonIdempotent is true.
+	RetryableMethods []string
+	// RetryNonIdempotent opts in to retrying all HTTP methods (including POST/PATCH)
+	// even without an Idempotency-Key header.
+	RetryNonIdempotent bool
 	// RetryCondition allows custom logic to determine whether an error/response is retryable.
 	RetryCondition func(resp *http.Response, err error) bool
 }
@@ -109,6 +117,14 @@ func WithRetryPolicy(rp RetryPolicy) Option {
 func WithMaxRetries(n int) Option {
 	return func(c *Config) {
 		c.Retry.MaxRetries = n
+	}
+}
+
+// WithRetryNonIdempotent controls whether non-idempotent HTTP methods (e.g. POST, PATCH)
+// without an Idempotency-Key header are retried automatically.
+func WithRetryNonIdempotent(enabled bool) Option {
+	return func(c *Config) {
+		c.Retry.RetryNonIdempotent = enabled
 	}
 }
 

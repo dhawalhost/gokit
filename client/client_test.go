@@ -217,6 +217,7 @@ func TestClient_Retry_TableDriven(t *testing.T) {
 				defer ts.Close()
 
 				c := client.New(
+					client.WithDefaultHeader("Idempotency-Key", "replay-test-1"),
 					client.WithRetryPolicy(client.RetryPolicy{
 						MaxRetries:           2,
 						InitialBackoff:       10 * time.Millisecond,
@@ -750,6 +751,7 @@ func TestClient_EdgeCases_TableDriven(t *testing.T) {
 				if err != nil {
 					t.Fatalf("NewRequest: %v", err)
 				}
+				req.Header.Set("Idempotency-Key", "getbody-err-1")
 				req.GetBody = func() (io.ReadCloser, error) {
 					return nil, errors.New("cannot create body reader")
 				}
@@ -873,8 +875,6 @@ func TestGK05_AttemptTimeoutLargeBody(t *testing.T) {
 }
 
 func TestGK06_MethodAwareRetries(t *testing.T) {
-	t.Skip("GK-06: pending fix")
-
 	var hits atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -907,4 +907,86 @@ func TestGK06_MethodAwareRetries(t *testing.T) {
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("GK-06: expected POST without Idempotency-Key to hit server exactly once, got %d", got)
 	}
+
+	t.Run("POST with Idempotency-Key retries safely", func(t *testing.T) {
+		var attempts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if attempts.Add(1) < 2 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+		}))
+		defer srv.Close()
+
+		idempClient := client.New(
+			client.WithRetryPolicy(client.RetryPolicy{
+				MaxRetries:           2,
+				InitialBackoff:       5 * time.Millisecond,
+				RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+			}),
+			client.WithLogger(zap.NewNop()),
+		)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(`{}`))
+		req.Header.Set("Idempotency-Key", "safe-post-key")
+		resp, err := idempClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do failed: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated || attempts.Load() != 2 {
+			t.Fatalf("expected 201 after 2 attempts, got status=%d attempts=%d", resp.StatusCode, attempts.Load())
+		}
+	})
+
+	t.Run("WithRetryNonIdempotent opts in to POST retries and PUT retries by default", func(t *testing.T) {
+		var postHits, putHits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && postHits.Add(1) < 2 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if r.Method == http.MethodPut && putHits.Add(1) < 2 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		optClient := client.New(
+			client.WithRetryPolicy(client.RetryPolicy{
+				MaxRetries:           2,
+				InitialBackoff:       5 * time.Millisecond,
+				RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+			}),
+			client.WithRetryNonIdempotent(true),
+			client.WithLogger(zap.NewNop()),
+		)
+		resp, err := optClient.Post(context.Background(), srv.URL, "application/json", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatalf("Post failed: %v", err)
+		}
+		_ = resp.Body.Close()
+		if postHits.Load() != 2 {
+			t.Fatalf("expected 2 POST hits with WithRetryNonIdempotent, got %d", postHits.Load())
+		}
+
+		defaultClient := client.New(
+			client.WithRetryPolicy(client.RetryPolicy{
+				MaxRetries:           2,
+				InitialBackoff:       5 * time.Millisecond,
+				RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+			}),
+			client.WithLogger(zap.NewNop()),
+		)
+		putResp, err := defaultClient.Put(context.Background(), srv.URL, "application/json", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+		_ = putResp.Body.Close()
+		if putHits.Load() != 2 {
+			t.Fatalf("expected 2 PUT hits by default, got %d", putHits.Load())
+		}
+	})
 }
