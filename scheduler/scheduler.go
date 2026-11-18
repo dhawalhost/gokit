@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/dhawalhost/gokit/distlock"
 )
 
 // Scheduler coordinates the registration, timing, and execution of recurring jobs.
@@ -217,7 +219,7 @@ func (s *Scheduler) RunJob(ctx context.Context, jobID string) error {
 	s.stopMu.RUnlock()
 	defer s.activeWg.Done()
 
-	return s.executeJob(ctx, entry, true)
+	return s.executeJob(ctx, entry, time.Time{}, true)
 }
 
 // tick inspects all registered jobs and triggers executions whose nextRun is due.
@@ -231,7 +233,8 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 
 	for _, entry := range entries {
 		entry.mu.RLock()
-		due := !entry.nextRun.IsZero() && !now.Before(entry.nextRun)
+		scheduledTick := entry.nextRun
+		due := !scheduledTick.IsZero() && !now.Before(scheduledTick)
 		entry.mu.RUnlock()
 
 		if due {
@@ -243,16 +246,16 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 			s.activeWg.Add(1)
 			s.stopMu.RUnlock()
 
-			go func(e *jobEntry) {
+			go func(e *jobEntry, tickTime time.Time) {
 				defer s.activeWg.Done()
-				_ = s.executeJob(ctx, e, false)
-			}(entry)
+				_ = s.executeJob(ctx, e, tickTime, false)
+			}(entry, scheduledTick)
 		}
 	}
 }
 
 // executeJob handles concurrency control, distributed locking, timeout, retry, and execution metrics.
-func (s *Scheduler) executeJob(ctx context.Context, e *jobEntry, isManual bool) error {
+func (s *Scheduler) executeJob(ctx context.Context, e *jobEntry, scheduledTick time.Time, isManual bool) error {
 	e.mu.Lock()
 	now := s.now()
 
@@ -278,6 +281,8 @@ func (s *Scheduler) executeJob(ctx context.Context, e *jobEntry, isManual bool) 
 	s.notifyStart(snap)
 
 	// Distributed lock handling
+	jobCtx := ctx
+	var cancelJob context.CancelFunc
 	var unlockFunc func()
 	if e.cfg.LockKey != "" && s.cfg.Locker != nil {
 		ttl := e.cfg.LockTTL
@@ -285,32 +290,72 @@ func (s *Scheduler) executeJob(ctx context.Context, e *jobEntry, isManual bool) 
 			ttl = 30 * time.Second
 		}
 
-		lock, err := s.cfg.Locker.Obtain(ctx, e.cfg.LockKey, ttl)
-		if err != nil {
-			// Lock not acquired: another replica is executing this job
-			e.mu.Lock()
-			e.running = false
-			e.skippedCount++
-			e.state = StateSkipped
-			snapAfter := e.snapshotLocked()
-			e.mu.Unlock()
-
-			s.notifySkipped(snapAfter, "locked_by_peer")
-			return nil
+		lockKey := e.cfg.LockKey
+		if !isManual && !scheduledTick.IsZero() {
+			if es, ok := e.schedule.(*EverySchedule); ok && es.Interval > 0 {
+				slot := scheduledTick.UTC().Truncate(es.Interval)
+				lockKey = fmt.Sprintf("%s:%d", e.cfg.LockKey, slot.UnixNano())
+			} else {
+				lockKey = fmt.Sprintf("%s:%d", e.cfg.LockKey, scheduledTick.UTC().UnixNano())
+			}
 		}
 
+		lock, err := s.cfg.Locker.Obtain(ctx, lockKey, ttl, distlock.WithAutoRenew(ttl/3))
+		if err != nil {
+			e.mu.Lock()
+			e.running = false
+			if errors.Is(err, distlock.ErrLockHeld) {
+				e.skippedCount++
+				e.state = StateSkipped
+				snapAfter := e.snapshotLocked()
+				e.mu.Unlock()
+				s.notifySkipped(snapAfter, "locked_by_peer")
+				return nil
+			}
+			e.failureCount++
+			e.state = StateFailed
+			e.lastError = err
+			snapAfter := e.snapshotLocked()
+			e.mu.Unlock()
+			s.notifyFailure(snapAfter, 0, err)
+			return err
+		}
+
+		var watchCancel context.CancelFunc
+		jobCtx, watchCancel = context.WithCancel(ctx)
+		cancelJob = watchCancel
+		doneWatch := make(chan struct{})
+		go func() {
+			select {
+			case <-lock.Lost():
+				watchCancel()
+			case <-doneWatch:
+			}
+		}()
+
 		unlockFunc = func() {
-			_ = lock.Unlock(context.Background())
+			close(doneWatch)
+			if isManual {
+				_ = lock.Unlock(context.Background())
+				return
+			}
+			// Keep per-tick locks until TTL expiry to block clock-skewed peers from re-running this tick.
+			if stopper, ok := lock.(interface{ StopAutoRenew() }); ok {
+				stopper.StopAutoRenew()
+			}
 		}
 	}
 
+	if cancelJob != nil {
+		defer cancelJob()
+	}
 	if unlockFunc != nil {
 		defer unlockFunc()
 	}
 
 	// Execution with timeout and retries
 	start := s.now()
-	err := s.runWithRetries(ctx, e)
+	err := s.runWithRetries(jobCtx, e)
 	duration := s.now().Sub(start)
 
 	e.mu.Lock()

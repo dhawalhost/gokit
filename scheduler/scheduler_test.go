@@ -414,8 +414,6 @@ func TestScheduler_LifecycleErrors(t *testing.T) {
 }
 
 func TestGK09_SchedulerPerTickLockAndRedisOutage(t *testing.T) {
-	t.Skip("GK-09: pending fix")
-
 	t.Run("two schedulers 500ms apart run short job once per tick", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -481,6 +479,50 @@ func TestGK09_SchedulerPerTickLockAndRedisOutage(t *testing.T) {
 		}
 		if skipped.Load() || !failed.Load() {
 			t.Fatalf("GK-09: expected OnJobFailure=true and OnJobSkipped=false, got failed=%v skipped=%v", failed.Load(), skipped.Load())
+		}
+	})
+
+	t.Run("long job renews lock beyond TTL so second replica cannot run same tick", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		defer func() { _ = rdb.Close() }()
+		locker := distlock.NewRedisLocker(rdb)
+
+		base := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		var runs atomic.Int32
+		started := make(chan struct{})
+
+		s1 := New(WithLocker(locker))
+		s1.timeNow = func() time.Time { return base }
+		s2 := New(WithLocker(locker))
+		s2.timeNow = func() time.Time { return base }
+
+		if _, err := s1.RegisterFunc("@every 2s", func(_ context.Context) error {
+			runs.Add(1)
+			close(started)
+			time.Sleep(150 * time.Millisecond)
+			return nil
+		}, WithJobLock("gk09:long", 60*time.Millisecond)); err != nil {
+			t.Fatalf("s1 register: %v", err)
+		}
+		if _, err := s2.RegisterFunc("@every 2s", func(_ context.Context) error {
+			runs.Add(1)
+			return nil
+		}, WithJobLock("gk09:long", 60*time.Millisecond)); err != nil {
+			t.Fatalf("s2 register: %v", err)
+		}
+
+		tickTime := base.Add(2 * time.Second)
+		s1.tick(context.Background(), tickTime)
+		<-started
+		// Wait past initial 60ms TTL while s1 is still running (150ms); auto-renew must preserve lock.
+		time.Sleep(90 * time.Millisecond)
+		s2.tick(context.Background(), tickTime)
+		s1.activeWg.Wait()
+		s2.activeWg.Wait()
+
+		if got := runs.Load(); got != 1 {
+			t.Fatalf("GK-09: expected long job with auto-renew to execute once, got %d", got)
 		}
 	})
 }
