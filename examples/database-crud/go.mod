@@ -5,7 +5,7 @@ go 1.26.11
 require (
 	github.com/dhawalhost/gokit v0.10.0
 	github.com/dhawalhost/gokit/database v0.10.0
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.4.0
 	go.uber.org/zap v1.27.1
 	gorm.io/gorm v1.31.2
 )
