@@ -2,6 +2,7 @@ package multitenancy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -70,9 +71,36 @@ func (s *ScopedCache) Exists(ctx context.Context, key string) (bool, error) {
 	return s.underlying.Exists(ctx, s.key(key))
 }
 
+// ClearPrefix removes keys matching prefix inside this tenant namespace.
+func (s *ScopedCache) ClearPrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return errors.New("multitenancy: clear prefix must not be empty")
+	}
+	clearer, ok := s.underlying.(cache.PrefixClearer)
+	if !ok {
+		return errors.New("multitenancy: underlying cache does not implement ClearPrefix")
+	}
+	return clearer.ClearPrefix(ctx, s.key(prefix))
+}
+
+// ClearTenant removes all cache keys belonging to this tenant namespace.
+func (s *ScopedCache) ClearTenant(ctx context.Context) error {
+	clearer, ok := s.underlying.(cache.PrefixClearer)
+	if !ok {
+		return errors.New("multitenancy: underlying cache does not implement ClearPrefix")
+	}
+	return clearer.ClearPrefix(ctx, s.key(""))
+}
+
 // Flush deletes all keys in the underlying cache store.
+//
+// Deprecated: Flush wipes the entire underlying cache across all tenants; use ClearTenant or ClearPrefix instead.
 func (s *ScopedCache) Flush(ctx context.Context) error {
-	return s.underlying.Flush(ctx)
+	flusher, ok := s.underlying.(interface{ Flush(context.Context) error })
+	if !ok {
+		return errors.New("multitenancy: underlying cache does not implement Flush")
+	}
+	return flusher.Flush(ctx)
 }
 
 // SetNX atomically sets key under this tenant namespace if it does not already exist.
@@ -149,9 +177,27 @@ func (c *ContextScopedCache) Exists(ctx context.Context, key string) (bool, erro
 	return c.underlying.Exists(ctx, ScopedKeyFromContext(ctx, key))
 }
 
+// ClearPrefix removes keys matching prefix inside the tenant namespace derived from ctx.
+func (c *ContextScopedCache) ClearPrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return errors.New("multitenancy: clear prefix must not be empty")
+	}
+	clearer, ok := c.underlying.(cache.PrefixClearer)
+	if !ok {
+		return errors.New("multitenancy: underlying cache does not implement ClearPrefix")
+	}
+	return clearer.ClearPrefix(ctx, ScopedKeyFromContext(ctx, prefix))
+}
+
 // Flush deletes all keys in the underlying cache.
+//
+// Deprecated: Flush wipes the entire underlying cache across all tenants; use ClearPrefix instead.
 func (c *ContextScopedCache) Flush(ctx context.Context) error {
-	return c.underlying.Flush(ctx)
+	flusher, ok := c.underlying.(interface{ Flush(context.Context) error })
+	if !ok {
+		return errors.New("multitenancy: underlying cache does not implement Flush")
+	}
+	return flusher.Flush(ctx)
 }
 
 // SetNX atomically sets key scoped by the tenant in ctx if it does not already exist.

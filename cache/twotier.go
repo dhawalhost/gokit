@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,13 +115,39 @@ func (t *TwoTierCache) Exists(ctx context.Context, key string) (bool, error) {
 	return t.l2.Exists(ctx, key)
 }
 
+// ClearPrefix removes all L1 and L2 keys matching prefix while leaving unrelated keys intact.
+func (t *TwoTierCache) ClearPrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return errors.New("cache: clear prefix must not be empty")
+	}
+
+	t.mu.Lock()
+	for k := range t.l1 {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.l1, k)
+		}
+	}
+	t.mu.Unlock()
+
+	if clearer, ok := t.l2.(PrefixClearer); ok {
+		return clearer.ClearPrefix(ctx, prefix)
+	}
+	return errors.New("cache: underlying L2 cache does not implement ClearPrefix")
+}
+
 // Flush clears all keys from both L1 and L2.
+//
+// Deprecated: Flush wipes the entire L2 store including unrelated keys; use ClearPrefix instead.
 func (t *TwoTierCache) Flush(ctx context.Context) error {
 	t.mu.Lock()
 	t.l1 = make(map[string]l1Entry)
 	t.mu.Unlock()
 
-	return t.l2.Flush(ctx)
+	flusher, ok := t.l2.(interface{ Flush(context.Context) error })
+	if !ok {
+		return errors.New("cache: underlying L2 cache does not implement Flush")
+	}
+	return flusher.Flush(ctx)
 }
 
 // InvalidateL1 deletes a key from local L1 memory (e.g. upon receiving a pub/sub event).

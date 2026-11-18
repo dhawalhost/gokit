@@ -16,8 +16,13 @@ type Cache interface {
 	Delete(ctx context.Context, keys ...string) error
 	// Exists reports whether key exists.
 	Exists(ctx context.Context, key string) (bool, error)
-	// Flush deletes all keys in the store.
-	Flush(ctx context.Context) error
+}
+
+// PrefixClearer is an optional interface implemented by Cache backends that support
+// deleting keys matching a prefix without affecting unrelated keys in the store.
+type PrefixClearer interface {
+	// ClearPrefix removes all keys matching prefix (e.g. "cache:users:").
+	ClearPrefix(ctx context.Context, prefix string) error
 }
 
 // AtomicLocker is an optional interface implemented by Cache backends that support

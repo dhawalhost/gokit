@@ -3,6 +3,7 @@ package cache_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -375,5 +376,58 @@ func TestDelete_MultiKeysPipeline(t *testing.T) {
 		if exists, _ := rc.Exists(ctx, k); exists {
 			t.Errorf("expected %s to be deleted", k)
 		}
+	}
+}
+
+func TestGK14_ClearPrefixLeavesOtherKeysIntact(t *testing.T) {
+	if _, hasFlush := reflect.TypeFor[cache.Cache]().MethodByName("Flush"); hasFlush {
+		t.Fatal("GK-14: cache.Cache interface must not declare Flush")
+	}
+
+	rc, _ := newTestCache(t)
+	ctx := context.Background()
+
+	_ = rc.Set(ctx, "cache:item:1", "v1", time.Minute)
+	_ = rc.Set(ctx, "cache:item:2", "v2", time.Minute)
+	_ = rc.Set(ctx, "lock:order:1", "tok", time.Minute)
+	_ = rc.Set(ctx, "session:abc", "data", time.Minute)
+
+	type prefixClearer interface {
+		ClearPrefix(ctx context.Context, prefix string) error
+	}
+	clearer, ok := any(rc).(prefixClearer)
+	if !ok {
+		t.Fatal("GK-14: RedisCache must implement ClearPrefix(ctx, prefix)")
+	}
+	if err := clearer.ClearPrefix(ctx, "cache:"); err != nil {
+		t.Fatalf("ClearPrefix failed: %v", err)
+	}
+
+	for _, deletedKey := range []string{"cache:item:1", "cache:item:2"} {
+		if exists, _ := rc.Exists(ctx, deletedKey); exists {
+			t.Fatalf("GK-14: expected %q to be deleted by ClearPrefix", deletedKey)
+		}
+	}
+	for _, preservedKey := range []string{"lock:order:1", "session:abc"} {
+		if exists, _ := rc.Exists(ctx, preservedKey); !exists {
+			t.Fatalf("GK-14: expected %q outside prefix to remain intact", preservedKey)
+		}
+	}
+
+	if err := rc.ClearPrefix(ctx, ""); err == nil {
+		t.Fatal("GK-14: expected error when clearing empty prefix")
+	}
+
+	tt := cache.NewTwoTier(rc, cache.TwoTierConfig{})
+	_ = tt.Set(ctx, "tt:a", "1", time.Minute)
+	_ = tt.Set(ctx, "other:b", "2", time.Minute)
+	if err := tt.ClearPrefix(ctx, "tt:"); err != nil {
+		t.Fatalf("TwoTier ClearPrefix failed: %v", err)
+	}
+	if exists, _ := tt.Exists(ctx, "tt:a"); exists {
+		t.Fatal("GK-14: expected tt:a cleared from TwoTierCache")
+	}
+	if exists, _ := tt.Exists(ctx, "other:b"); !exists {
+		t.Fatal("GK-14: expected other:b preserved in TwoTierCache")
 	}
 }

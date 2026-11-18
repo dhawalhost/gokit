@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -140,8 +141,59 @@ func (r *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 	return n > 0, nil
 }
 
+// ClearPrefix removes all keys matching prefix using non-blocking SCAN + UNLINK,
+// leaving keys outside the prefix intact. Refuses an empty prefix to prevent full-DB wipes.
+func (r *RedisCache) ClearPrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return errors.New("cache: clear prefix must not be empty")
+	}
+	pattern := prefix + "*"
+
+	if clusterClient, ok := r.client.(*redis.ClusterClient); ok {
+		err := clusterClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			return scanAndUnlink(ctx, master, pattern)
+		})
+		if err != nil {
+			return fmt.Errorf("cache: clear prefix cluster: %w", err)
+		}
+		return nil
+	}
+
+	if err := scanAndUnlink(ctx, r.client, pattern); err != nil {
+		return fmt.Errorf("cache: clear prefix: %w", err)
+	}
+	return nil
+}
+
+func scanAndUnlink(ctx context.Context, client redis.Cmdable, pattern string) error {
+	var cursor uint64
+	for {
+		keys, nextCursor, err := client.Scan(ctx, cursor, pattern, 500).Result()
+		if err != nil {
+			return err
+		}
+		if len(keys) > 0 {
+			// Pipeline individual UNLINKs so multi-key deletion never triggers CROSSSLOT on cluster shards.
+			pipe := client.Pipeline()
+			for _, k := range keys {
+				pipe.Unlink(ctx, k)
+			}
+			if _, err := pipe.Exec(ctx); err != nil {
+				return err
+			}
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			return nil
+		}
+	}
+}
+
 // Flush deletes all keys in the current Redis database.
 // For Redis Cluster, it flushes all master nodes in the cluster.
+//
+// Deprecated: Flush wipes the entire Redis database including locks, sessions,
+// and rate-limit buckets; use ClearPrefix instead.
 func (r *RedisCache) Flush(ctx context.Context) error {
 	if clusterClient, ok := r.client.(*redis.ClusterClient); ok {
 		err := clusterClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
