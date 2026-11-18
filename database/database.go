@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/dhawalhost/gokit/migration"
+	"github.com/dhawalhost/gokit/x/migration"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/gorm"
 )

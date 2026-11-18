@@ -38,7 +38,7 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Row-Level Lock Contention**         | `UPDATE counters SET count=count+1` caps at ~2,000 writes/sec              | [`cache.NewShardedCounter`](cache/README.md) (Stripes increments over $N$ slots)                                                                            |
 | **Replica Lag Ghosting**              | User updates profile; refresh hits replica with 500ms lag; data disappears | [`database.ReadYourWritesMiddleware`](database/README.md) (Sticky primary routing)                                                                          |
 | **Double-Charge / Payment Race**      | Client retries timed-out payment; user charged twice                       | [`idempotency.New`](idempotency/README.md) + [`distlock.New`](distlock/README.md) (In-flight locking)         |
-| **Distributed Multi-Service Drift**   | Payment succeeds, inventory reservation fails; inconsistent state          | [`saga.New`](saga/README.md) (Orchestration with reverse compensations)                                                                                     |
+| **Distributed Multi-Service Drift**   | Payment succeeds, inventory reservation fails; inconsistent state          | [`saga.New`](x/saga/README.md) (Orchestration with reverse compensations)                                                                                     |
 | **Dual-Write Inconsistency**          | DB write commits but Redis/Kafka publish fails; permanent drift            | [`outbox.NewOutbox`](outbox/README.md) + [`eventbus.New`](eventbus/README.md) (`SKIP LOCKED` relay)           |
 | **Cascading Downstream Failure**      | Slow payment gateway exhausts connection pool and crashes fleet            | [`circuitbreaker.New`](circuitbreaker/README.md) + [`bulkhead.New`](bulkhead/README.md) (Fast-fail isolation) |
 | **Inbound Webhook Replay Attacks**    | Stolen webhook payload re-submitted by malicious actor                     | [`webhook.NewVerifier`](webhook/README.md) (HMAC-SHA256 + tolerance window)                                                                                 |
@@ -49,18 +49,18 @@ At staff and senior levels, system design evaluates **judgment under ambiguity, 
 | **Consumer Lag Explosion**            | Consumer falls behind; unbounded queue triggers OOM crash                  | [`batcher.New`](batcher/README.md) (Configurable prefetch & backpressure watermarks)                                                                        |
 | **Broker Redelivery Duplicates**      | Network timeout triggers retry; transaction executes twice                 | [`idempotency.New`](idempotency/README.md) (`INSERT ... ON CONFLICT DO NOTHING` / atomic token check)                                                        |
 | **N+1 Database Query Storm**          | GraphQL / REST resolvers fire 50 individual queries for 50 items          | [`batcher.NewDataLoader`](batcher/README.md) (Singleflight batch coalescing with in-memory TTL memoization)                                                  |
-| **BFF Aggregation Tail Drag**         | Slowest microservice blocks client screen on mobile fanout                 | [`gateway.ScatterGather`](gateway/README.md) (Parallel fanout with context deadlines & partial degradation)                                                 |
-| **Multi-Replica Migration Race**      | 20 Kubernetes pods run DDL concurrently on deploy, corrupting schema       | [`migration.NewSQL`](migration/README.md) + [`distlock`](distlock/README.md) (Distributed lock mutex)         |
+| **BFF Aggregation Tail Drag**         | Slowest microservice blocks client screen on mobile fanout                 | [`gateway.ScatterGather`](x/gateway/README.md) (Parallel fanout with context deadlines & partial degradation)                                                 |
+| **Multi-Replica Migration Race**      | 20 Kubernetes pods run DDL concurrently on deploy, corrupting schema       | [`migration.NewSQL`](x/migration/README.md) + [`distlock`](distlock/README.md) (Distributed lock mutex)         |
 | **Credential & Key Log Leakage**      | API keys, secrets, or passwords logged in crash dumps or tracing spans     | [`secrets.NewSecret`](secrets/README.md) (`[REDACTED]` stringer & leak-proof memory zeroing)                                                                 |
-| **Invalid State Transition Race**     | Order cancelled after shipment due to concurrent status updates            | [`workflow.NewEngine`](workflow/README.md) (FSM transition guards & optimistic version locking)                                                              |
+| **Invalid State Transition Race**     | Order cancelled after shipment due to concurrent status updates            | [`workflow.NewEngine`](x/workflow/README.md) (FSM transition guards & optimistic version locking)                                                              |
 | **Multi-Tenant Data Bleed**           | Unscoped query or missing `WHERE tenant_id` leaks data across accounts      | [`multitenancy.TenantMiddleware`](multitenancy/README.md) (PostgreSQL RLS session variables & GORM scopes)                                                   |
 | **Fleet Cascade Saturation / OOM**   | Influx of peak burst traffic exhausts server CPU and memory                | [`loadshed.Adaptive`](loadshed/README.md) (Priority-aware traffic shedding protecting critical paths)                                                        |
-| **External Search Cluster Bloat**     | Multi-node Elasticsearch clusters add 50ms latency & thousands in cloud bills | [`search.NewMemoryIndex`](search/README.md) (In-process sub-millisecond BM25 inverted index with zero external dependencies)                               |
-| **Network Egress Bill Shock & Delay** | 100k QPS returning 50 KB JSON responses saturates 40 Gbps NICs & racks up egress | [`compression.Middleware`](compression/README.md) (Zero-allocation multi-codec compression reducing egress by 70–85% with Zstd & Brotli)                    |
-| **Audit Loss & Concurrent State Corruption** | Destructive in-place updates overwrite ledger history or cause lost updates | [`eventstore.NewRepository`](eventstore/README.md) (Append-only immutable event streams with optimistic version locking & CQRS projection replay) |
-| **Session Hijacking & Fixation Attack** | Stolen cookie or fixed session token allows unauthorized account takeover | [`session.NewManager`](session/README.md) (Subnet & UA fingerprint validation, session regeneration on login, sliding/absolute TTLs) |
-| **Silent OOM Kills & Goroutine Runaway** | Unmonitored memory leaks trigger Linux kernel SIGKILL 137 without stack traces | [`diagnostics.NewMemoryWatchdog`](diagnostics/README.md) (Automated watermark heap dumping with cooldown, goroutine leak analyzer & token-secured pprof) |
-| **Streaming ETL Deadlocks & Memory Starvation** | Unbounded stream channels exhaust memory, slow downstream consumers halt upstream producers, and unhandled errors crash long-lived ETL pipelines | [`pipeline.New`](pipeline/README.md) (Bounded intermediate backpressure, fan-out worker pools, temporal windowing, panic isolation, and dead-letter routing) |
+| **External Search Cluster Bloat**     | Multi-node Elasticsearch clusters add 50ms latency & thousands in cloud bills | [`search.NewMemoryIndex`](x/search/README.md) (In-process sub-millisecond BM25 inverted index with zero external dependencies)                               |
+| **Network Egress Bill Shock & Delay** | 100k QPS returning 50 KB JSON responses saturates 40 Gbps NICs & racks up egress | [`compression.Middleware`](x/compression/README.md) (Zero-allocation multi-codec compression reducing egress by 70–85% with Zstd & Brotli)                    |
+| **Audit Loss & Concurrent State Corruption** | Destructive in-place updates overwrite ledger history or cause lost updates | [`eventstore.NewRepository`](x/eventstore/README.md) (Append-only immutable event streams with optimistic version locking & CQRS projection replay) |
+| **Session Hijacking & Fixation Attack** | Stolen cookie or fixed session token allows unauthorized account takeover | [`session.NewManager`](x/session/README.md) (Subnet & UA fingerprint validation, session regeneration on login, sliding/absolute TTLs) |
+| **Silent OOM Kills & Goroutine Runaway** | Unmonitored memory leaks trigger Linux kernel SIGKILL 137 without stack traces | [`diagnostics.NewMemoryWatchdog`](x/diagnostics/README.md) (Automated watermark heap dumping with cooldown, goroutine leak analyzer & token-secured pprof) |
+| **Streaming ETL Deadlocks & Memory Starvation** | Unbounded stream channels exhaust memory, slow downstream consumers halt upstream producers, and unhandled errors crash long-lived ETL pipelines | [`pipeline.New`](x/pipeline/README.md) (Bounded intermediate backpressure, fan-out worker pools, temporal windowing, panic isolation, and dead-letter routing) |
 
 ---
 
@@ -164,7 +164,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/dhawalhost/gokit/saga"
+    "github.com/dhawalhost/gokit/x/saga"
 )
 
 func ProcessOrder(ctx context.Context, orderID string, amount int64) (*saga.ExecutionResult, error) {
@@ -282,7 +282,7 @@ import (
     "context"
     "time"
 
-    "github.com/dhawalhost/gokit/gateway"
+    "github.com/dhawalhost/gokit/x/gateway"
 )
 
 type HomeScreenData struct {
@@ -375,7 +375,7 @@ import (
     "time"
 
     "github.com/dhawalhost/gokit/distlock"
-    "github.com/dhawalhost/gokit/migration"
+    "github.com/dhawalhost/gokit/x/migration"
 )
 
 //go:embed migrations/*.sql
@@ -415,7 +415,7 @@ package main
 import (
     "context"
 
-    "github.com/dhawalhost/gokit/workflow"
+    "github.com/dhawalhost/gokit/x/workflow"
 )
 
 type OrderContext struct {
@@ -456,7 +456,7 @@ package main
 import (
     "context"
 
-    "github.com/dhawalhost/gokit/search"
+    "github.com/dhawalhost/gokit/x/search"
 )
 
 type Product struct {
@@ -567,7 +567,7 @@ package main
 import (
     "net/http"
 
-    "github.com/dhawalhost/gokit/compression"
+    "github.com/dhawalhost/gokit/x/compression"
     "github.com/dhawalhost/gokit/router"
 )
 
@@ -609,7 +609,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/dhawalhost/gokit/eventstore"
+    "github.com/dhawalhost/gokit/x/eventstore"
 )
 
 type BankAccount struct {
@@ -669,7 +669,7 @@ import (
     "time"
 
     "github.com/dhawalhost/gokit/router"
-    "github.com/dhawalhost/gokit/session"
+    "github.com/dhawalhost/gokit/x/session"
 )
 
 func SetupSecureSessionGateway() http.Handler {
@@ -726,7 +726,7 @@ import (
     "net/http"
     "time"
 
-    "github.com/dhawalhost/gokit/diagnostics"
+    "github.com/dhawalhost/gokit/x/diagnostics"
 )
 
 func SetupProductionDiagnostics(ctx context.Context) http.Handler {
@@ -767,7 +767,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/dhawalhost/gokit/pipeline"
+    "github.com/dhawalhost/gokit/x/pipeline"
 )
 
 type EventLog struct {
@@ -1266,19 +1266,19 @@ Modern microservices rely on an edge or internal **API Gateway** to terminate TL
 
 ### 1. Reverse Proxy Mechanics & Idle Pool Alignment
 - **The Keep-Alive Deadlock:** If the downstream microservice closes an idle TCP connection without the edge proxy realizing it, the next proxied request encounters an abrupt `EOF` or `connection reset by peer`.
-- [`gateway.NewProxy`](gateway/README.md) utilizes modern Go `net/http/httputil.ReverseProxy` with explicit `Rewrite` hooks (preventing hop-by-hop header leaks) and sets configurable connection pooling (`MaxIdleConnsPerHost`, `IdleConnTimeout`).
+- [`gateway.NewProxy`](x/gateway/README.md) utilizes modern Go `net/http/httputil.ReverseProxy` with explicit `Rewrite` hooks (preventing hop-by-hop header leaks) and sets configurable connection pooling (`MaxIdleConnsPerHost`, `IdleConnTimeout`).
 
 ### 2. Multi-Strategy Load Balancing
 - **Round-Robin**: Uniform distribution for homogeneous stateless workers.
 - **Least-Connection**: Routes traffic to the pod currently handling the fewest concurrent in-flight requests; ideal when request processing times vary by orders of magnitude (e.g. fast metadata queries vs heavy PDF generations).
 - **IP-Hash**: Deterministic affinity routing ensuring consecutive requests from the same client IP land on the same host (e.g. for warm local caching), with fallback when nodes fail.
-- Implemented via [`gateway.NewLoadBalancer`](gateway/README.md).
+- Implemented via [`gateway.NewLoadBalancer`](x/gateway/README.md).
 
 ### 3. Scatter-Gather Parallel Fan-Out (BFF)
 When rendering a mobile dashboard requiring data from 4 separate microservices (Profile, Orders, Notifications, Recommendations):
 - **Sequential Calls:** Total latency $= \sum_{i=1}^N T_i$. A slow recommendation service (500ms) pushes total response time $> 800\text{ms}$.
 - **Parallel Fan-out with SLA Budget:** Total latency $= \max(T_1, T_2, \dots) \le \text{Timeout}$.
-- [`gateway.ScatterGather`](gateway/README.md) executes tasks in parallel with `sync.WaitGroup`, enforces a strict overall context deadline, and allows non-critical components to degrade gracefully while essential data (Profile and Orders) returns successfully.
+- [`gateway.ScatterGather`](x/gateway/README.md) executes tasks in parallel with `sync.WaitGroup`, enforces a strict overall context deadline, and allows non-critical components to degrade gracefully while essential data (Profile and Orders) returns successfully.
 
 ---
 
@@ -1362,7 +1362,7 @@ Deploying database schema changes in high-availability environments requires coo
 When a new version of a microservice rolls out across 50 Kubernetes pods, all pods start concurrently. If each pod attempts to run `CREATE TABLE` or `ALTER TABLE` simultaneously:
 - Database locks deadlock.
 - Schema version tables collide with primary key violations.
-- [`migration.WithLocker`](migration/README.md) integrates with [`distlock.Locker`](distlock/README.md), serializing execution so exactly **one pod** runs the migration while other replicas await completion.
+- [`migration.WithLocker`](x/migration/README.md) integrates with [`distlock.Locker`](distlock/README.md), serializing execution so exactly **one pod** runs the migration while other replicas await completion.
 
 ### 2. The Expand and Contract Pattern (Parallel Run)
 Never alter or drop a column in a single step while old code is still running:
@@ -1373,9 +1373,9 @@ Never alter or drop a column in a single step while old code is still running:
 
 ### 3. Dirty Migration Recovery
 If a DDL statement fails midway (e.g. unique constraint violation during an index creation):
-- [`migration.Migrator`](migration/README.md) records `dirty = true` in `schema_migrations`.
+- [`migration.Migrator`](x/migration/README.md) records `dirty = true` in `schema_migrations`.
 - Subsequent deployments refuse to run on dirty databases, preventing compounded schema drift.
-- Operators review the failure, manually fix the index, and invoke [`migrator.Force(version)`](migration/README.md) to restore clean state.
+- Operators review the failure, manually fix the index, and invoke [`migrator.Force(version)`](x/migration/README.md) to restore clean state.
 
 ---
 
@@ -1393,7 +1393,7 @@ Complex business processes (KYC approval, order delivery, loan underwriting) mus
 
 ### 1. Guard-Enforced Determinism
 - Ad-hoc database string updates (`UPDATE orders SET status = 'DELIVERED' WHERE id = 1`) lack invariant enforcement.
-- [`workflow.Engine`](workflow/README.md) registers allowed `Transition{From, To, Event}` tuples and executes conditional `Guard` functions before permitting any state mutation.
+- [`workflow.Engine`](x/workflow/README.md) registers allowed `Transition{From, To, Event}` tuples and executes conditional `Guard` functions before permitting any state mutation.
 
 ### 2. Optimistic Concurrency Control (Version Locking)
 To prevent two concurrent requests from both transitioning an order simultaneously:
@@ -1446,7 +1446,7 @@ When microservices need search capabilities (user directories, product catalogs,
 - **Network Overhead:** Every search involves HTTP/REST serialization and 10–50ms network round-trips.
 - **Consistency Drifts:** Asynchronous ingestion creates lag where newly created records are invisible to users.
 
-[`search`](search/README.md) solves this with an in-process, thread-safe inverted index delivering sub-millisecond query evaluation.
+[`search`](x/search/README.md) solves this with an in-process, thread-safe inverted index delivering sub-millisecond query evaluation.
 
 ```
 Incoming Document ──> Text Analysis Pipeline
@@ -1497,7 +1497,7 @@ Consider an API serving $100\text{k QPS}$ where each JSON response averages $50\
 Naive compression in Go (`gzip.NewWriter(w)`) allocates new compression state and hash tables on the heap **for every incoming HTTP request**:
 - A single Gzip encoder allocates $\sim 60\text{ KB} - 250\text{ KB}$.
 - At $50\text{k QPS}$, naive allocation generates **$12.5\text{ GB/sec}$ of short-lived garbage**, forcing the Go runtime into severe Stop-The-World (STW) garbage collection thrashing!
-- [`compression`](compression/README.md) solves this by maintaining specialized `sync.Pool` instances for Gzip, Deflate, Brotli, and Zstandard. Writers are reset and recycled across requests, eliminating heap churn entirely.
+- [`compression`](x/compression/README.md) solves this by maintaining specialized `sync.Pool` instances for Gzip, Deflate, Brotli, and Zstandard. Writers are reset and recycled across requests, eliminating heap churn entirely.
 
 ### 3. Codec Selection Matrix
 - **Zstandard (`zstd`)**: Best for **service-to-service internal RPCs** and cache payloads. Its decompression speed exceeds $1\text{ GB/sec}$ per core with near-zero latency degradation.
@@ -1513,7 +1513,7 @@ Traditional CRUD architectures mutate records in place (`UPDATE accounts SET bal
 - **Race Condition Vulnerabilities:** Concurrent writes lead to lost update anomalies unless aggressive table-level locks or distributed mutexes are acquired.
 - **Audit Deficits:** External regulators (SOC2, HIPAA, PCI-DSS, FedRAMP) require mathematical, tamper-evident proof of every change that ever occurred.
 
-[`eventstore`](eventstore/README.md) transforms domain persistence from destructive mutation into a pure, append-only ledger of immutable domain facts.
+[`eventstore`](x/eventstore/README.md) transforms domain persistence from destructive mutation into a pure, append-only ledger of immutable domain facts.
 
 ```
        Write Side (Commands)                             Read Side (Queries)
@@ -1542,13 +1542,13 @@ Traditional CRUD architectures mutate records in place (`UPDATE accounts SET bal
 3. **Optimistic Concurrency Control:** When committing new events, callers specify `ExpectedVersion`. If a concurrent transaction appended an event in the interim, the version check fails with `ErrConcurrencyConflict`, preventing lost updates without locking the database table.
 
 ### 2. Snapshotting Strategy for Long-Lived Streams
-Replaying 50,000 events to reconstruct an aggregate that has existed for five years would introduce intolerable $O(N)$ read latency. [`eventstore.SnapshotStore`](eventstore/README.md) solves this via periodic state snapshotting:
+Replaying 50,000 events to reconstruct an aggregate that has existed for five years would introduce intolerable $O(N)$ read latency. [`eventstore.SnapshotStore`](x/eventstore/README.md) solves this via periodic state snapshotting:
 - At configured intervals (e.g. `EveryNEvents(100)`), the aggregate's point-in-time state is serialized to the snapshot store.
 - Upon reload, the aggregate state is restored directly from snapshot at version $K$ ($O(1)$), and only delta events $K+1 \dots N$ are replayed. Rehydration latency remains $< 1\text{ms}$ regardless of stream lifetime.
 
 ### 3. Asynchronous CQRS Projections & Checkpoints
 In Event Sourcing, write models are optimized solely for command validation and invariant enforcement, not querying. 
-- The [`SubscriptionManager`](eventstore/README.md) fans out committed events to read-side `Projection` handlers.
+- The [`SubscriptionManager`](x/eventstore/README.md) fans out committed events to read-side `Projection` handlers.
 - Each projection maintains its own persistent `CheckpointStore` tracking the last successfully processed global position.
 - If a projection service crashes or new read models are deployed, projections simply catch up from their last checkpoint or replay from position 0 to retroactively generate new query tables.
 
@@ -1561,7 +1561,7 @@ Session management in distributed architectures is fraught with subtle security 
 - **Session Hijacking:** Stolen session tokens (via XSS, insecure network transit, or malicious proxies) are replayed by attackers from foreign IP addresses.
 - **Race Condition Header Flushing:** In Go's `net/http`, once `w.Write()` or `w.WriteHeader()` executes, response headers are flushed down the TCP socket. Any session modifications attempted afterwards fail to set the `Set-Cookie` header.
 
-[`session`](session/README.md) addresses each of these threat vectors systematically.
+[`session`](x/session/README.md) addresses each of these threat vectors systematically.
 
 ```
 Incoming Request
@@ -1596,17 +1596,17 @@ sessionResponseWriter.WriteHeader() / Write()
 
 ### 1. Subnet-Tolerant Anti-Hijacking Fingerprinting
 Naively binding sessions to exact client IP addresses causes frequent session dropouts on mobile devices as users roam between cellular towers and Wi-Fi networks:
-- **Subnet Masking:** [`session.DefaultFingerprint`](session/README.md) applies a `/24` CIDR mask to IPv4 addresses (or `/48` to IPv6), masking individual host variations while anchoring the session to the client's local autonomous routing domain.
+- **Subnet Masking:** [`session.DefaultFingerprint`](x/session/README.md) applies a `/24` CIDR mask to IPv4 addresses (or `/48` to IPv6), masking individual host variations while anchoring the session to the client's local autonomous routing domain.
 - Combined with the normalized `User-Agent` string into a SHA-256 digest, this detects unauthorized cross-regional or cross-device token replaying without annoying legitimate roaming mobile users.
 
 ### 2. Session Fixation Defense via Token Regeneration
 Whenever a user's authorization tier changes (e.g., anonymous guest $\to$ authenticated user, or regular user $\to$ sudo/admin):
-- Calling [`session.Regenerate()`](session/README.md) atomically destroys the previous session ID in the storage backend and allocates a fresh 256-bit cryptographically random token (`crypto/rand`), moving existing session payloads into the new token.
+- Calling [`session.Regenerate()`](x/session/README.md) atomically destroys the previous session ID in the storage backend and allocates a fresh 256-bit cryptographically random token (`crypto/rand`), moving existing session payloads into the new token.
 - Even if an attacker seeded the original cookie, their access is severed the instant the victim authenticates.
 
 ### 3. Early Cookie Header Interception
 Go's standard `http.ResponseWriter` emits headers immediately when `WriteHeader` is invoked:
-- The [`session.Manager.Middleware()`](session/README.md) wraps `http.ResponseWriter` with an internal `sessionResponseWriter`.
+- The [`session.Manager.Middleware()`](x/session/README.md) wraps `http.ResponseWriter` with an internal `sessionResponseWriter`.
 - The first call to `WriteHeader()` or `Write()` intercepts the execution pipeline, persists modified session state to the store, and appends `Set-Cookie` (`HttpOnly`, `SameSite=Lax/Strict`, `Secure`, `Partitioned`) *before* delegating the status code write down to the underlying socket.
 
 ---
@@ -1618,7 +1618,7 @@ In high-concurrency production Go microservices, memory leaks and runaway gorout
 - **Runaway Goroutine Leaks:** Goroutines abandoned on blocked channel sends, unread network connections, or uncancelled contexts accumulate silently, bloating heap allocations and consuming CPU scheduler slices until node exhaustion.
 - **Public Profiler Exposure:** Mounting default `net/http/pprof` endpoints without strict authentication exposes decrypted memory heaps, secret keys, and customer data to external port scanners.
 
-[`diagnostics`](diagnostics/README.md) resolves each failure scenario through proactive automation and defensive design.
+[`diagnostics`](x/diagnostics/README.md) resolves each failure scenario through proactive automation and defensive design.
 
 ```
                       Runtime Memory Monitoring Loop
@@ -1645,19 +1645,19 @@ In high-concurrency production Go microservices, memory leaks and runaway gorout
 
 ### 1. Watermark-Triggered Heap Snapshots
 Instead of post-mortem guessing after a container has already died:
-- The [`diagnostics.MemoryWatchdog`](diagnostics/README.md) evaluates `runtime.MemStats` on an active interval.
+- The [`diagnostics.MemoryWatchdog`](x/diagnostics/README.md) evaluates `runtime.MemStats` on an active interval.
 - When `HeapAlloc` breaches the configured safety threshold (e.g. 80% of container cgroup memory), it proactively executes `pprof.WriteHeapProfile()` to disk before the kernel kills the pod.
 - **Disk IOPS Protection:** Under continuous memory saturation, taking dumps every 5 seconds would exhaust disk IOPS and fill the filesystem. The watchdog enforces a rate-limiting cooldown window (e.g. 3–5 minutes) between dumps.
 
 ### 2. Goroutine Leak Detection & Stack Diffing
 Detecting leaks during development, CI/CD integration tests, and staging:
-- [`diagnostics.CaptureGoroutines()`](diagnostics/README.md) captures all active goroutine IDs and parses their full stack traces.
-- After running a concurrent workload, [`diagnostics.VerifyNoGoroutineLeak()`](diagnostics/README.md) computes the set difference between current and baseline goroutines.
+- [`diagnostics.CaptureGoroutines()`](x/diagnostics/README.md) captures all active goroutine IDs and parses their full stack traces.
+- After running a concurrent workload, [`diagnostics.VerifyNoGoroutineLeak()`](x/diagnostics/README.md) computes the set difference between current and baseline goroutines.
 - **Settlement Grace Period:** Asynchronous workers may take a few milliseconds to notice context cancellation. The detector applies a configurable polling settlement grace period (`WithSettleTimeout`) and pattern filtering (`WithIgnoredPatterns`) to ignore runtime internals while catching true application worker leaks.
 
 ### 3. Zero-Trust Authenticated Diagnostic Routing
 Access to `/debug/pprof/*` endpoints must be restricted:
-- [`diagnostics.NewHandler()`](diagnostics/README.md) requires constant-time Bearer token verification (`crypto/subtle.ConstantTimeCompare`) on all incoming diagnostic requests.
+- [`diagnostics.NewHandler()`](x/diagnostics/README.md) requires constant-time Bearer token verification (`crypto/subtle.ConstantTimeCompare`) on all incoming diagnostic requests.
 - CIDR subnet allowlisting enforces that only trusted internal management networks (e.g. VPC bastion `10.0.0.0/8` or local loopback `127.0.0.1/32`) can probe profiler endpoints, eliminating unauthorized reconnaissance.
 
 ---
@@ -1669,7 +1669,7 @@ High-volume event processing, data ingestion, and asynchronous analytics pipelin
 - **Cascading Pipeline Stalls:** A slow or stalled downstream consumer (such as a slow database batch insert) blocks the entire chain of upstream producers, starving workers and causing ingress timeouts.
 - **Fatal Error Crashes & Lost Streams:** An unhandled error or runtime panic in a single data record can terminate the entire pipeline process, abandoning all queued in-flight events.
 
-[`pipeline`](pipeline/README.md) provides an end-to-end framework for reliable, bounded streaming execution.
+[`pipeline`](x/pipeline/README.md) provides an end-to-end framework for reliable, bounded streaming execution.
 
 ```
                            Pipeline Execution Graph

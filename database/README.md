@@ -12,7 +12,7 @@
 - **Tuned Connection Pooling**:
   - Configurable max open connections, idle connections, lifetime caps, and idle timeouts.
 - **Automated Schema Migrations**:
-  - Direct integration with [`gokit/migration`](../migration/README.md) via `db.Migrate(ctx, fsys, dir)` supporting `//go:embed`, dirty-state tracking, and distributed locking.
+  - Direct integration with [`gokit/x/migration`](../x/migration/README.md) via `db.Migrate(ctx, fsys, dir)` supporting `//go:embed`, dirty-state tracking, and distributed locking.
 
 ---
 
