@@ -6,7 +6,9 @@ import (
 )
 
 // Secret wraps sensitive values, preventing accidental exposure in logs, JSON, or stack traces,
-// while providing explicit retrieval and secure memory zeroing.
+// while providing explicit retrieval, provider metadata, and secure memory zeroing via .Zero().
+//
+// For static configuration file fields (e.g., config YAML/JSON structs), see config.Secret.
 type Secret struct {
 	data      []byte
 	version   string
@@ -115,6 +117,27 @@ func (s *Secret) MarshalJSON() ([]byte, error) {
 // MarshalText overrides text serialization to prevent leaking secret contents.
 func (s *Secret) MarshalText() ([]byte, error) {
 	return []byte("[REDACTED]"), nil
+}
+
+// UnmarshalText unmarshals plaintext into a Secret, enabling seamless decoding
+// in configuration decoders (YAML, TOML, env vars).
+func (s *Secret) UnmarshalText(text []byte) error {
+	if s == nil {
+		return nil
+	}
+	s.data = make([]byte, len(text))
+	copy(s.data, text)
+	s.updatedAt = time.Now().UTC()
+	return nil
+}
+
+// UnmarshalJSON unmarshals a JSON string into a Secret.
+func (s *Secret) UnmarshalJSON(b []byte) error {
+	var val string
+	if err := json.Unmarshal(b, &val); err != nil {
+		return err
+	}
+	return s.UnmarshalText([]byte(val))
 }
 
 // Zero securely scrubs the secret payload from memory.

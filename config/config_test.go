@@ -265,6 +265,18 @@ func TestSecret_Masking_TableDriven(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "ToSecret converts to managed secrets.Secret",
+			test: func(t *testing.T) {
+				sec := s.ToSecret()
+				if sec.Value() != "super-secret-password" {
+					t.Errorf("ToSecret value failed: got %s, want super-secret-password", sec.Value())
+				}
+				if sec.String() != "[REDACTED]" {
+					t.Errorf("ToSecret String failed: got %s, want [REDACTED]", sec.String())
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -388,7 +400,7 @@ func TestConfigTypes_StringAndLogValue_TableDriven(t *testing.T) {
 			},
 		},
 		{
-			name: "Secret LogValue and UnmarshalJSON",
+			name: "Secret LogValue and UnmarshalJSON and UnmarshalText",
 			run: func(t *testing.T) {
 				var s Secret
 				err := json.Unmarshal([]byte(`"my-super-secret-api-token"`), &s)
@@ -403,6 +415,14 @@ func TestConfigTypes_StringAndLogValue_TableDriven(t *testing.T) {
 				}
 				if s.LogValue().String() != MaskedSecretPlaceholder {
 					t.Errorf("expected masked in LogValue")
+				}
+
+				var sText Secret
+				if err := sText.UnmarshalText([]byte("text-secret-value")); err != nil {
+					t.Fatalf("Secret UnmarshalText error: %v", err)
+				}
+				if sText.Expose() != "text-secret-value" {
+					t.Errorf("expected text-secret-value, got %s", sText.Expose())
 				}
 			},
 		},

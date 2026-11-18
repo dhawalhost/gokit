@@ -30,44 +30,6 @@ func TestNewFailsWithBadDSN(t *testing.T) {
 	}
 }
 
-func TestRunMigrationsBadDSN(t *testing.T) {
-	tests := []struct {
-		name           string
-		dsn            string
-		migrationsPath string
-	}{
-		{"bad dsn", "postgresql://user:pass@localhost:5999/testdb", "/tmp/migrations"},
-		{"invalid dsn format", "invalid-dsn", "/tmp/migrations"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := database.RunMigrations(context.Background(), tc.dsn, tc.migrationsPath)
-			if err == nil {
-				t.Fatalf("expected error for DSN %q", tc.dsn)
-			}
-		})
-	}
-}
-
-func TestRollbackMigrationBadDSN(t *testing.T) {
-	tests := []struct {
-		name           string
-		dsn            string
-		migrationsPath string
-	}{
-		{"bad dsn", "postgresql://user:pass@localhost:5999/testdb", "/tmp/migrations"},
-		{"invalid dsn format", "invalid-dsn", "/tmp/migrations"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := database.RollbackMigration(context.Background(), tc.dsn, tc.migrationsPath)
-			if err == nil {
-				t.Fatalf("expected error for DSN %q", tc.dsn)
-			}
-		})
-	}
-}
-
 func TestReplicaRouter(t *testing.T) {
 	t.Run("nil primary returns error", func(t *testing.T) {
 		_, err := database.NewReplicaRouter(nil)
@@ -333,5 +295,17 @@ func TestDB_CloseAndHealthCheck_TableDriven(t *testing.T) {
 			db := &database.DB{}
 			tc.operation(t, db)
 		})
+	}
+}
+
+func TestDB_Migrate_Uninitialized(t *testing.T) {
+	var nilDB *database.DB
+	if err := nilDB.Migrate(context.Background(), nil, ""); err == nil {
+		t.Fatal("expected error on nil DB.Migrate")
+	}
+
+	emptyDB := &database.DB{}
+	if err := emptyDB.Migrate(context.Background(), nil, ""); err == nil {
+		t.Fatal("expected error on uninitialized DB.Migrate")
 	}
 }

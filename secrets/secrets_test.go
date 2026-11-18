@@ -374,3 +374,24 @@ func TestManager_DisabledCache(t *testing.T) {
 		t.Errorf("expected ErrSecretNotFound, got: %v", err)
 	}
 }
+
+func TestSecret_UnmarshalTextAndJSON(t *testing.T) {
+	var s secrets.Secret
+	if err := s.UnmarshalText([]byte("unmarshaled-secret")); err != nil {
+		t.Fatalf("UnmarshalText failed: %v", err)
+	}
+	if s.Value() != "unmarshaled-secret" {
+		t.Errorf("expected unmarshaled-secret, got %s", s.Value())
+	}
+	if s.String() != "[REDACTED]" {
+		t.Errorf("expected [REDACTED], got %s", s.String())
+	}
+
+	var jsonSecret secrets.Secret
+	if err := json.Unmarshal([]byte(`"json-secret-value"`), &jsonSecret); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if jsonSecret.Value() != "json-secret-value" {
+		t.Errorf("expected json-secret-value, got %s", jsonSecret.Value())
+	}
+}

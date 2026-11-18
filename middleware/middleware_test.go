@@ -2,6 +2,8 @@ package middleware_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -411,6 +413,65 @@ func TestJWT_TableDriven(t *testing.T) {
 	rEmpty, _ := http.NewRequest(http.MethodGet, "/", nil)
 	if _, ok := middleware.ClaimsFromContext(rEmpty.Context()); ok {
 		t.Error("expected ok=false when no claims in context")
+	}
+}
+
+type testCustomClaims struct {
+	UserID   string   `json:"user_id"`
+	TenantID string   `json:"tenant_id"`
+	Roles    []string `json:"roles"`
+}
+
+func TestJWT_RS256_And_TypedClaims(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"sub":       "user-456",
+		"user_id":   "user-456",
+		"tenant_id": "tenant-corp",
+		"roles":     []string{"admin", "editor"},
+		"exp":       time.Now().Add(time.Hour).Unix(),
+	})
+	tokenStr, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("failed to sign RS256 token: %v", err)
+	}
+
+	var capturedClaims testCustomClaims
+	var reached bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		if !middleware.TypedClaimsFromContext(r.Context(), &capturedClaims) {
+			t.Errorf("TypedClaimsFromContext failed")
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := middleware.JWTConfig{
+		PublicKey: &key.PublicKey,
+	}
+
+	w := httptest.NewRecorder()
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	middleware.JWT(cfg)(handler).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", w.Code)
+	}
+	if !reached {
+		t.Fatal("handler was not reached")
+	}
+	if capturedClaims.UserID != "user-456" || capturedClaims.TenantID != "tenant-corp" || len(capturedClaims.Roles) != 2 {
+		t.Errorf("unexpected typed claims: %+v", capturedClaims)
+	}
+
+	// Nil dest test
+	if middleware.TypedClaimsFromContext[testCustomClaims](r.Context(), nil) {
+		t.Error("expected false for nil dest")
 	}
 }
 

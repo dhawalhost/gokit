@@ -46,6 +46,23 @@ func SetupRouter(log *zap.Logger) *chi.Mux {
     r.Use(middleware.Timeout(30 * time.Second))
     r.Use(middleware.CORS([]string{"https://app.example.com"}))
 
+    // Protected routes with JWT validation (supports HS256 SecretKey and RS256 PublicKey)
+    r.Group(func(pr chi.Router) {
+        pr.Use(middleware.JWT(middleware.JWTConfig{
+            SecretKey: []byte("super-secret-key"),
+        }))
+        pr.Get("/profile", func(w http.ResponseWriter, r *http.Request) {
+            // Extract strongly-typed claims directly
+            var claims struct {
+                UserID string `json:"user_id"`
+            }
+            if ok := middleware.TypedClaimsFromContext(r.Context(), &claims); ok {
+                // Access typed claims
+            }
+        })
+    })
+
     return r
 }
 ```
+

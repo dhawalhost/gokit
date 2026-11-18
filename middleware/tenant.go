@@ -3,29 +3,33 @@ package middleware
 import (
 	"context"
 	"net/http"
+
+	"github.com/dhawalhost/gokit/multitenancy"
 )
 
-type tenantIDContextKey struct{}
-
 // TenantID returns a middleware that reads the X-Tenant-ID header and stores its
-// value in the request context.
+// value in the request context using gokit/multitenancy.
+//
+// For strict enforcement (rejecting missing tenant headers with 400 Bad Request JSON errors),
+// database query scoping, or tenant-isolated caching, use multitenancy.RequireTenant.
 func TenantID() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tid := r.Header.Get("X-Tenant-ID")
-			ctx := context.WithValue(r.Context(), tenantIDContextKey{}, tid)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			if tid != "" {
+				r = r.WithContext(multitenancy.WithTenantID(r.Context(), tid))
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }
 
 // WithTenantID sets the tenant ID on the context.
 func WithTenantID(ctx context.Context, tenantID string) context.Context {
-	return context.WithValue(ctx, tenantIDContextKey{}, tenantID)
+	return multitenancy.WithTenantID(ctx, tenantID)
 }
 
-// TenantIDFromContext retrieves the tenant ID stored by the TenantID middleware.
+// TenantIDFromContext retrieves the tenant ID stored in the context.
 func TenantIDFromContext(ctx context.Context) (string, bool) {
-	tid, ok := ctx.Value(tenantIDContextKey{}).(string)
-	return tid, ok && tid != ""
+	return multitenancy.FromContext(ctx)
 }

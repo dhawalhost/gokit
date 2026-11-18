@@ -12,7 +12,7 @@
 - **Tuned Connection Pooling**:
   - Configurable max open connections, idle connections, lifetime caps, and idle timeouts.
 - **Automated Schema Migrations**:
-  - Built-in migration runner powered by `golang-migrate/migrate/v4`.
+  - Direct integration with [`gokit/migration`](../migration/README.md) via `db.Migrate(ctx, fsys, dir)` supporting `//go:embed`, dirty-state tracking, and distributed locking.
 
 ---
 
@@ -23,16 +23,21 @@ package main
 
 import (
     "context"
+    "embed"
     "time"
 
+    "github.com/dhawalhost/gokit/config"
     "github.com/dhawalhost/gokit/database"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 func main() {
     ctx := context.Background()
 
     // 1. Establish database connection pool
-    db, err := database.New(ctx, database.Config{
+    db, err := database.New(ctx, config.DatabaseConfig{
         DSN:             "postgres://user:password@localhost:5432/dbname?sslmode=disable",
         MaxOpenConns:    25,
         MaxIdleConns:    5,
@@ -52,8 +57,8 @@ func main() {
     rows, _ := db.Pool.Query(ctx, "SELECT id, name FROM users WHERE active = true")
     defer rows.Close()
 
-    // 4. Run database migrations
-    _ = database.RunMigrations(ctx, db.Config.DSN, "file://migrations")
+    // 4. Run database migrations using embedded SQL files
+    _ = db.Migrate(ctx, migrationsFS, "migrations")
 }
 ```
 

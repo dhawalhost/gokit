@@ -386,8 +386,8 @@ db.GORM.Find(&users)
 // Raw pgx
 rows, err := db.Pool.Query(ctx, "SELECT id FROM users")
 
-// Migrations
-err = database.RunMigrations(ctx, cfg.Database.DSN, cfg.Database.MigrationsPath)
+// Migrations (using embedded SQL or filesystem via gokit/migration)
+err = db.Migrate(ctx, migrationsFS, "migrations")
 ```
 
 ### `cache`

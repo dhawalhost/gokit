@@ -2,8 +2,6 @@ package multitenancy
 
 import (
 	"context"
-
-	"github.com/dhawalhost/gokit/middleware"
 )
 
 type tenantContextKey struct{}
@@ -26,21 +24,23 @@ func WithTenantID(ctx context.Context, tenantID string) context.Context {
 }
 
 // FromContext retrieves the tenant ID from the context.
-// It checks the multitenancy context key, falling back to middleware.TenantIDFromContext.
 func FromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
 	if t, ok := ctx.Value(tenantContextKey{}).(Tenant); ok && t.ID != "" {
 		return t.ID, true
 	}
-	return middleware.TenantIDFromContext(ctx)
+	return "", false
 }
 
 // TenantFromContext retrieves the full Tenant object from the context if available.
 func TenantFromContext(ctx context.Context) (Tenant, bool) {
+	if ctx == nil {
+		return Tenant{}, false
+	}
 	if t, ok := ctx.Value(tenantContextKey{}).(Tenant); ok && t.ID != "" {
 		return t, true
-	}
-	if tid, ok := middleware.TenantIDFromContext(ctx); ok && tid != "" {
-		return Tenant{ID: tid}, true
 	}
 	return Tenant{}, false
 }

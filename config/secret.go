@@ -3,12 +3,18 @@ package config
 import (
 	"encoding/json"
 	"log/slog"
+
+	"github.com/dhawalhost/gokit/secrets"
 )
 
 // Secret wraps a sensitive string value and prevents it from being leaked
 // in logs, error traces, or serialized output.
-// It is available as an opt-in utility for applications requiring explicit
-// type-level protection for credentials or PII.
+// It is specifically designed as an opt-in type for static configuration structs
+// (e.g., credentials loaded from YAML, JSON, or environment flags).
+//
+// For enterprise dynamic secret management (e.g., loading from HashiCorp Vault,
+// AWS Secrets Manager, automatic rotation, and secure memory zeroing via .Zero()),
+// use the gokit/secrets package instead.
 type Secret string
 
 // Expose returns the underlying sensitive secret value.
@@ -20,6 +26,12 @@ func (s Secret) Expose() string {
 // Get is an alias for Expose, returning the raw string value.
 func (s Secret) Get() string {
 	return string(s)
+}
+
+// ToSecret converts the static config.Secret into a managed *secrets.Secret
+// with memory zeroing capabilities.
+func (s Secret) ToSecret(opts ...secrets.SecretOption) *secrets.Secret {
+	return secrets.NewSecret(string(s), opts...)
 }
 
 // String implements fmt.Stringer to ensure that the secret is redacted
@@ -51,12 +63,19 @@ func (s Secret) LogValue() slog.Value {
 }
 
 // UnmarshalJSON implements json.Unmarshaler to allow loading the secret
-// from JSON/YAML sources while preserving its sensitive nature.
+// from JSON sources while preserving its sensitive nature.
 func (s *Secret) UnmarshalJSON(b []byte) error {
 	var val string
 	if err := json.Unmarshal(b, &val); err != nil {
 		return err
 	}
 	*s = Secret(val)
+	return nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler to allow loading the secret
+// from YAML, TOML, and environment variable sources.
+func (s *Secret) UnmarshalText(text []byte) error {
+	*s = Secret(text)
 	return nil
 }

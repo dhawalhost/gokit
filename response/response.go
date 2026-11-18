@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/dhawalhost/gokit/middleware"
+	"github.com/dhawalhost/gokit/pagination"
 )
 
 // Response is a generic success envelope.
@@ -24,15 +25,8 @@ type PaginatedResponse[T any] struct {
 	RequestID  string     `json:"request_id,omitempty"`
 }
 
-// Pagination holds paging metadata.
-type Pagination struct {
-	Page       int   `json:"page"`
-	PageSize   int   `json:"page_size"`
-	Total      int64 `json:"total"`
-	TotalPages int   `json:"total_pages"`
-	HasNext    bool  `json:"has_next"`
-	HasPrev    bool  `json:"has_prev"`
-}
+// Pagination holds paging metadata. It is aliased to pagination.Pagination for seamless interoperability.
+type Pagination = pagination.Pagination
 
 func write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

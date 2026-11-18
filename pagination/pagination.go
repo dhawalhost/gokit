@@ -7,9 +7,17 @@ import (
 	"strconv"
 
 	"gorm.io/gorm"
-
-	"github.com/dhawalhost/gokit/response"
 )
+
+// Pagination holds paging metadata for offset and cursor responses.
+type Pagination struct {
+	Page       int   `json:"page"`
+	PageSize   int   `json:"page_size"`
+	Total      int64 `json:"total"`
+	TotalPages int   `json:"total_pages"`
+	HasNext    bool  `json:"has_next"`
+	HasPrev    bool  `json:"has_prev"`
+}
 
 // OffsetParams holds parsed offset-pagination parameters.
 type OffsetParams struct {
@@ -37,10 +45,10 @@ func (p OffsetParams) Apply(db *gorm.DB) *gorm.DB {
 	return db.Limit(p.PageSize).Offset(offset)
 }
 
-// ToPagination builds a response.Pagination from the total record count.
-func (p OffsetParams) ToPagination(total int64) response.Pagination {
+// ToPagination builds a Pagination from the total record count.
+func (p OffsetParams) ToPagination(total int64) Pagination {
 	totalPages := int(math.Ceil(float64(total) / float64(p.PageSize)))
-	return response.Pagination{
+	return Pagination{
 		Page:       p.Page,
 		PageSize:   p.PageSize,
 		Total:      total,
