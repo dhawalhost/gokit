@@ -9,6 +9,7 @@ import (
 
 	"github.com/dhawalhost/gokit/outbox"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 type mockPublisher struct {
@@ -397,6 +398,33 @@ func TestRelay_Lifecycle_TableDriven(t *testing.T) {
 			// Stop cleanly
 			relay.Stop()
 		})
+	}
+}
+
+func TestGK11_OutboxPollIndex(t *testing.T) {
+	s, err := schema.Parse(&outbox.Message{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatalf("schema.Parse failed: %v", err)
+	}
+
+	indexes := s.ParseIndexes()
+	var scheduledIdx *schema.Index
+	for _, idx := range indexes {
+		if idx.Name == "idx_outbox_scheduled" {
+			scheduledIdx = idx
+			break
+		}
+	}
+	if scheduledIdx == nil {
+		t.Fatal("GK-11: expected idx_outbox_scheduled index on outbox.Message")
+	}
+
+	if len(scheduledIdx.Fields) != 2 {
+		t.Fatalf("GK-11: expected idx_outbox_scheduled to have 2 columns (status, scheduled_at), got %d (%+v)", len(scheduledIdx.Fields), scheduledIdx.Fields)
+	}
+	if scheduledIdx.Fields[0].DBName != "status" || scheduledIdx.Fields[1].DBName != "scheduled_at" {
+		t.Fatalf("GK-11: expected idx_outbox_scheduled columns [status, scheduled_at], got [%s, %s]",
+			scheduledIdx.Fields[0].DBName, scheduledIdx.Fields[1].DBName)
 	}
 }
 
