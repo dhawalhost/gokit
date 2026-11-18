@@ -28,26 +28,6 @@ func (r *StatusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
-// timeoutResponseWriter wraps ResponseWriter to track whether headers have
-// been written, preventing a double-write when a timeout fires concurrently.
-type timeoutResponseWriter struct {
-	http.ResponseWriter
-	written bool
-	done    chan struct{}
-}
-
-func (tw *timeoutResponseWriter) WriteHeader(code int) {
-	if !tw.written {
-		tw.written = true
-		tw.ResponseWriter.WriteHeader(code)
-	}
-}
-
-func (tw *timeoutResponseWriter) Write(b []byte) (int, error) {
-	tw.written = true
-	return tw.ResponseWriter.Write(b)
-}
-
 // extractIP cleans and validates an IP string, stripping ports and spaces.
 func extractIP(addr string) string {
 	addr = strings.TrimSpace(addr)

@@ -646,13 +646,13 @@ func TestTimeout_TableDriven(t *testing.T) {
 			},
 		},
 		{
-			name:    "slow handler exceeding timeout returns 504 Gateway Timeout",
+			name:    "slow handler exceeding timeout returns 503 Service Unavailable",
 			timeout: 20 * time.Millisecond,
 			handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 				<-r.Context().Done()
 			}),
 			sleep:      50 * time.Millisecond,
-			wantStatus: http.StatusGatewayTimeout,
+			wantStatus: http.StatusServiceUnavailable,
 		},
 	}
 
@@ -1093,8 +1093,6 @@ func TestGK03_TenantBoundToIdentity(t *testing.T) {
 }
 
 func TestGK04_TimeoutPanicAndLateWrite(t *testing.T) {
-	t.Skip("GK-04: pending fix")
-
 	t.Run("panic inside timeout is caught by recovery", func(t *testing.T) {
 		chain := middleware.Recovery(zap.NewNop())(
 			middleware.Timeout(time.Second)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
