@@ -18,19 +18,8 @@ import (
 	"github.com/dhawalhost/gokit/storage"
 )
 
-// Config aliases S3Config for ergonomic use as s3.Config.
-type Config = S3Config
-
-// Storage aliases S3Storage for ergonomic use as s3.Storage.
-type Storage = S3Storage
-
-// New initializes an S3Storage instance (alias of NewS3).
-func New(ctx context.Context, cfg S3Config) (*S3Storage, error) {
-	return NewS3(ctx, cfg)
-}
-
-// S3Config holds configuration parameters for the S3-compatible storage driver.
-type S3Config struct {
+// Config holds configuration parameters for the S3-compatible storage driver.
+type Config struct {
 	// Bucket is the name of the target S3 bucket (required).
 	Bucket string
 
@@ -52,16 +41,26 @@ type S3Config struct {
 	Client *s3.Client
 }
 
-// S3Storage provides a production-grade storage.Storage implementation for Amazon S3,
+// S3Config aliases Config for callers migrating from package storage.
+//
+//nolint:revive // Kept as a type alias for compatibility with pre-split storage.S3Config.
+type S3Config = Config
+
+// Storage provides a production-grade storage.Storage implementation for Amazon S3,
 // MinIO, Cloudflare R2, Google Cloud Storage, and other S3-compatible object stores.
-type S3Storage struct {
+type Storage struct {
 	client        *s3.Client
 	presignClient *s3.PresignClient
 	bucket        string
 }
 
-// NewS3 initializes an S3Storage instance.
-func NewS3(ctx context.Context, cfg S3Config) (*S3Storage, error) {
+// S3Storage aliases Storage for callers migrating from package storage.
+//
+//nolint:revive // Kept as a type alias for compatibility with pre-split storage.S3Storage.
+type S3Storage = Storage
+
+// New initializes an S3-compatible Storage instance.
+func New(ctx context.Context, cfg Config) (*Storage, error) {
 	if strings.TrimSpace(cfg.Bucket) == "" {
 		return nil, fmt.Errorf("storage: s3 bucket name is required")
 	}
@@ -95,11 +94,16 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		})
 	}
 
-	return &S3Storage{
+	return &Storage{
 		client:        client,
 		presignClient: s3.NewPresignClient(client),
 		bucket:        cfg.Bucket,
 	}, nil
+}
+
+// NewS3 initializes an S3-compatible Storage instance (alias of New).
+func NewS3(ctx context.Context, cfg Config) (*Storage, error) {
+	return New(ctx, cfg)
 }
 
 // Put uploads an object to S3.
