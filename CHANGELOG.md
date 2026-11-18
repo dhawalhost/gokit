@@ -12,7 +12,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 - **`eventstore`**: Append-only event sourcing engine with optimistic concurrency control, stream snapshots, and CQRS projection catch-up subscriptions.
 - **`session`**: Enterprise HTTP session manager with anti-hijacking client fingerprinting (`/24` IPv4 and `/48` IPv6 subnet masking), sliding TTLs, flash message data, and AES-256-GCM encrypted cookie stores.
-- Dedicated release notes: [releases/v0.9.0.md](releases/v0.9.0.md).
 
 ---
 

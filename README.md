@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/dhawalhost/gokit.svg)](https://pkg.go.dev/github.com/dhawalhost/gokit)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dhawalhost/gokit)](https://goreportcard.com/report/github.com/dhawalhost/gokit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
 
 **gokit** is the single-source-of-truth shared infrastructure library for all microservices in the `dhawalhost` ecosystem (leapmailr, wardseal, talentcurate, leverflag, and future services).
 
@@ -72,6 +72,10 @@
 | [`search`](search/README.md) | Embedded in-memory full-text search engine with BM25 ranking, tokenizers, n-grams, fuzzy matching, and boolean queries |
 | [`session`](session/README.md) | Distributed HTTP session manager with anti-hijacking validation, sliding TTLs, flash data, and encrypted cookie stores |
 | [`pipeline`](pipeline/README.md) | Concurrent stream ETL pipeline, tumbling/sliding temporal windows, fan-in/fan-out, bounded backpressure, and dead-letter queues |
+| [`grpc`](grpc/README.md) | Production gRPC server and client primitives with interceptors for recovery, logging, tracing, validation, and circuit breaking |
+| [`loadshed`](loadshed/README.md) | Adaptive latency-based concurrency limiting and load shedding for HTTP and gRPC services |
+| [`storage`](storage/README.md) | Cloud-agnostic object storage abstraction with S3-compatible, local filesystem, and in-memory backends |
+| [`streaming`](streaming/README.md) | Real-time Server-Sent Events (SSE) and WebSocket pub/sub hub with heartbeat keepalives |
 | [`testutil`](testutil/README.md) | Test helpers: logger, recorder, request builder, response assertions |
 
 ---
@@ -871,7 +875,6 @@ See [examples/README.md](examples/README.md) for detailed usage instructions and
 - **[SECURITY.md](SECURITY.md)**: Security policy, vulnerability reporting, and best practices
 - **[CHANGELOG.md](CHANGELOG.md)**: Detailed version history and release notes
 - **[INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)**: Integration testing guide with Docker setup
-- **[releases/v0.9.0.md](releases/v0.9.0.md)**: Latest v0.9.0 release notes ([all releases](releases/))
 
 ### API Documentation
 

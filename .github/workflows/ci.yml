@@ -26,6 +26,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Check go.mod tidy
+        run: go mod tidy -diff
+
       - name: Vet
         run: go vet ./...
 
@@ -43,40 +46,7 @@ jobs:
           cache: true
 
       - name: Test
-        run: |
-          go test -race -coverprofile=coverage.out -covermode=atomic \
-            ./audit/... \
-            ./authz/... \
-            ./bloomfilter/... \
-            ./bulkhead/... \
-            ./cache/... \
-            ./circuitbreaker/... \
-            ./client/... \
-            ./config/... \
-            ./crypto/... \
-            ./database/... \
-            ./distlock/... \
-            ./errors/... \
-            ./eventbus/... \
-            ./featureflag/... \
-            ./health/... \
-            ./idempotency/... \
-            ./idgen/... \
-            ./jobqueue/... \
-            ./logger/... \
-            ./middleware/... \
-            ./multitenancy/... \
-            ./observability/... \
-            ./outbox/... \
-            ./pagination/... \
-            ./ratelimit/... \
-            ./response/... \
-            ./router/... \
-            ./saga/... \
-            ./server/... \
-            ./testutil/... \
-            ./validator/... \
-            ./webhook/...
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
