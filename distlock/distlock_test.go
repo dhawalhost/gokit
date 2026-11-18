@@ -505,8 +505,6 @@ func TestGK07_LockLossCancelsContext(t *testing.T) {
 }
 
 func TestGK08_AtomicFencingTokenAndError(t *testing.T) {
-	t.Skip("GK-08: pending fix")
-
 	s := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: s.Addr()})
 	defer func() { _ = rdb.Close() }()
@@ -548,5 +546,11 @@ func TestGK08_AtomicFencingTokenAndError(t *testing.T) {
 	_ = s.Set("distlock:gk08-res:fencing_token", "not-an-integer")
 	if _, err := locker.Obtain(ctx, "gk08-res", 50*time.Millisecond); err == nil {
 		t.Fatal("GK-08: expected Obtain to return error when fencing token INCR fails")
+	}
+
+	// Verify Redis failure returns an error instead of token 0.
+	s.Close()
+	if _, err := locker.Obtain(ctx, "gk08-down", 50*time.Millisecond); err == nil {
+		t.Fatal("GK-08: expected Obtain to return error when Redis is unreachable")
 	}
 }

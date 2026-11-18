@@ -2,7 +2,6 @@ package distlock
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +11,21 @@ import (
 
 const (
 	defaultKeyPrefix = "distlock:"
+
+	// Lua script for atomic lock acquisition and monotonic fencing token generation.
+	// Checks lock absence, increments fencing token, and sets the lock key with NX and optional PX TTL.
+	obtainLuaScript = `
+if redis.call("exists", KEYS[1]) == 1 then
+    return 0
+end
+local token = redis.call("incr", KEYS[2])
+if tonumber(ARGV[2]) > 0 then
+    redis.call("set", KEYS[1], ARGV[1], "NX", "PX", ARGV[2])
+else
+    redis.call("set", KEYS[1], ARGV[1], "NX")
+end
+return token
+`
 
 	// Lua script for atomic unlock: checks token ownership before deleting.
 	unlockLuaScript = `
@@ -78,7 +92,12 @@ func (r *RedisLocker) Obtain(ctx context.Context, key string, ttl time.Duration,
 		opt(&options)
 	}
 
-	fullKey := r.keyPrefix + key
+	fullKey := fmt.Sprintf("%s{%s}", r.keyPrefix, key)
+	fenceKey := fmt.Sprintf("%s{%s}:fencing_token", r.keyPrefix, key)
+	ttlMs := ttl.Milliseconds()
+	if ttl > 0 && ttlMs == 0 {
+		ttlMs = 1
+	}
 	maxAttempts := options.Retries + 1
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -86,14 +105,17 @@ func (r *RedisLocker) Obtain(ctx context.Context, key string, ttl time.Duration,
 			return nil, ctx.Err()
 		}
 
-		// Try atomic SET key token NX PX ttl
-		setErr := r.client.SetArgs(ctx, fullKey, options.Token, redis.SetArgs{
-			Mode: "NX",
-			TTL:  ttl,
-		}).Err()
+		res, evalErr := r.client.Eval(ctx, obtainLuaScript, []string{fullKey, fenceKey}, options.Token, ttlMs).Result()
+		if evalErr != nil {
+			return nil, fmt.Errorf("distlock: redis obtain script error: %w", evalErr)
+		}
 
-		if setErr == nil {
-			fencingToken, _ := r.client.Incr(ctx, r.keyPrefix+key+":fencing_token").Result()
+		fencingToken, ok := res.(int64)
+		if !ok {
+			return nil, fmt.Errorf("distlock: unexpected obtain script return type %T", res)
+		}
+
+		if fencingToken > 0 {
 			base := NewBaseLock(key, options.Token, ttl, fencingToken)
 			lock := &RedisLock{
 				BaseLock: base,
@@ -106,10 +128,6 @@ func (r *RedisLocker) Obtain(ctx context.Context, key string, ttl time.Duration,
 			}
 
 			return lock, nil
-		}
-
-		if !errors.Is(setErr, redis.Nil) {
-			return nil, fmt.Errorf("distlock: redis set error: %w", setErr)
 		}
 
 		if attempt < options.Retries {
