@@ -134,6 +134,68 @@ func (t *TwoTierCache) GetOrSet(ctx context.Context, key string, ttl time.Durati
 	return t.coalescer.Do(ctx, t, key, ttl, fetch)
 }
 
+// SetNX atomically acquires a key in L2 if it implements AtomicLocker (or under local mutex fallback)
+// and updates L1 on success.
+func (t *TwoTierCache) SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	var acquired bool
+	var err error
+	if locker, ok := t.l2.(AtomicLocker); ok {
+		acquired, err = locker.SetNX(ctx, key, value, ttl)
+	} else {
+		t.mu.Lock()
+		exists, existsErr := t.l2.Exists(ctx, key)
+		if existsErr != nil {
+			t.mu.Unlock()
+			return false, existsErr
+		}
+		if !exists {
+			if setErr := t.l2.Set(ctx, key, value, ttl); setErr != nil {
+				t.mu.Unlock()
+				return false, setErr
+			}
+			acquired = true
+		}
+		t.mu.Unlock()
+	}
+	if err != nil || !acquired {
+		return false, err
+	}
+
+	l1TTL := t.cfg.L1TTL
+	if ttl > 0 && ttl < l1TTL {
+		l1TTL = ttl
+	}
+	t.setL1(key, serializeValue(value), l1TTL)
+	return true, nil
+}
+
+// CompareAndDelete atomically deletes key in L2 when its value equals expectedValue and invalidates L1.
+func (t *TwoTierCache) CompareAndDelete(ctx context.Context, key string, expectedValue string) (bool, error) {
+	var deleted bool
+	var err error
+	if locker, ok := t.l2.(AtomicLocker); ok {
+		deleted, err = locker.CompareAndDelete(ctx, key, expectedValue)
+	} else {
+		t.mu.Lock()
+		val, getErr := t.l2.Get(ctx, key)
+		if getErr == nil && val == expectedValue {
+			if delErr := t.l2.Delete(ctx, key); delErr != nil {
+				t.mu.Unlock()
+				return false, delErr
+			}
+			deleted = true
+		}
+		t.mu.Unlock()
+	}
+	if err != nil {
+		return false, err
+	}
+	if deleted {
+		t.InvalidateL1(key)
+	}
+	return deleted, nil
+}
+
 func (t *TwoTierCache) setL1(key, val string, ttl time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

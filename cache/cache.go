@@ -19,3 +19,12 @@ type Cache interface {
 	// Flush deletes all keys in the store.
 	Flush(ctx context.Context) error
 }
+
+// AtomicLocker is an optional interface implemented by Cache backends that support
+// atomic compare-and-set locking primitives.
+type AtomicLocker interface {
+	// SetNX stores value under key with ttl only if key does not already exist.
+	SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error)
+	// CompareAndDelete deletes key only if its current stored value equals expectedValue.
+	CompareAndDelete(ctx context.Context, key string, expectedValue string) (bool, error)
+}

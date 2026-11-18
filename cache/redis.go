@@ -172,3 +172,29 @@ func (r *RedisCache) Close() error {
 func (r *RedisCache) GetOrSet(ctx context.Context, key string, ttl time.Duration, fetch FetcherFunc) (string, error) {
 	return r.coalescer.Do(ctx, r, key, ttl, fetch)
 }
+
+const compareAndDeleteLua = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("del", KEYS[1])
+else
+	return 0
+end
+`
+
+// SetNX atomically sets key to value with ttl only if key does not already exist.
+func (r *RedisCache) SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	acquired, err := r.client.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("cache: setnx %q: %w", key, err)
+	}
+	return acquired, nil
+}
+
+// CompareAndDelete atomically deletes key if and only if its current value equals expectedValue.
+func (r *RedisCache) CompareAndDelete(ctx context.Context, key string, expectedValue string) (bool, error) {
+	res, err := r.client.Eval(ctx, compareAndDeleteLua, []string{key}, expectedValue).Int64()
+	if err != nil {
+		return false, fmt.Errorf("cache: compare and delete %q: %w", key, err)
+	}
+	return res > 0, nil
+}

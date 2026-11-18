@@ -3,6 +3,7 @@ package multitenancy
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/dhawalhost/gokit/cache"
@@ -26,6 +27,7 @@ func ScopedKeyFromContext(ctx context.Context, rawKey string) string {
 type ScopedCache struct {
 	underlying cache.Cache
 	tenantID   string
+	mu         sync.Mutex
 }
 
 // NewScopedCache creates a cache view bound to a specific tenant ID.
@@ -73,9 +75,46 @@ func (s *ScopedCache) Flush(ctx context.Context) error {
 	return s.underlying.Flush(ctx)
 }
 
+// SetNX atomically sets key under this tenant namespace if it does not already exist.
+func (s *ScopedCache) SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	scopedKey := s.key(key)
+	if locker, ok := s.underlying.(cache.AtomicLocker); ok {
+		return locker.SetNX(ctx, scopedKey, value, ttl)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exists, err := s.underlying.Exists(ctx, scopedKey)
+	if err != nil || exists {
+		return false, err
+	}
+	if err := s.underlying.Set(ctx, scopedKey, value, ttl); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CompareAndDelete atomically deletes key under this tenant namespace if its value matches expectedValue.
+func (s *ScopedCache) CompareAndDelete(ctx context.Context, key string, expectedValue string) (bool, error) {
+	scopedKey := s.key(key)
+	if locker, ok := s.underlying.(cache.AtomicLocker); ok {
+		return locker.CompareAndDelete(ctx, scopedKey, expectedValue)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	val, err := s.underlying.Get(ctx, scopedKey)
+	if err != nil || val != expectedValue {
+		return false, nil
+	}
+	if err := s.underlying.Delete(ctx, scopedKey); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ContextScopedCache dynamically derives tenant isolation from request context on each operation.
 type ContextScopedCache struct {
 	underlying cache.Cache
+	mu         sync.Mutex
 }
 
 // NewContextScopedCache constructs a ContextScopedCache.
@@ -113,4 +152,40 @@ func (c *ContextScopedCache) Exists(ctx context.Context, key string) (bool, erro
 // Flush deletes all keys in the underlying cache.
 func (c *ContextScopedCache) Flush(ctx context.Context) error {
 	return c.underlying.Flush(ctx)
+}
+
+// SetNX atomically sets key scoped by the tenant in ctx if it does not already exist.
+func (c *ContextScopedCache) SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	scopedKey := ScopedKeyFromContext(ctx, key)
+	if locker, ok := c.underlying.(cache.AtomicLocker); ok {
+		return locker.SetNX(ctx, scopedKey, value, ttl)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	exists, err := c.underlying.Exists(ctx, scopedKey)
+	if err != nil || exists {
+		return false, err
+	}
+	if err := c.underlying.Set(ctx, scopedKey, value, ttl); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CompareAndDelete atomically deletes key scoped by the tenant in ctx if its value matches expectedValue.
+func (c *ContextScopedCache) CompareAndDelete(ctx context.Context, key string, expectedValue string) (bool, error) {
+	scopedKey := ScopedKeyFromContext(ctx, key)
+	if locker, ok := c.underlying.(cache.AtomicLocker); ok {
+		return locker.CompareAndDelete(ctx, scopedKey, expectedValue)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	val, err := c.underlying.Get(ctx, scopedKey)
+	if err != nil || val != expectedValue {
+		return false, nil
+	}
+	if err := c.underlying.Delete(ctx, scopedKey); err != nil {
+		return false, err
+	}
+	return true, nil
 }

@@ -387,8 +387,6 @@ func TestStore_UnlockAndExpiration_TableDriven(t *testing.T) {
 }
 
 func TestGK01_ConcurrentIdempotencyLock(t *testing.T) {
-	t.Skip("GK-01: pending fix")
-
 	mr := miniredis.RunT(t)
 	rc, err := cache.NewRedis(config.RedisConfig{Addr: mr.Addr()})
 	if err != nil {
@@ -427,4 +425,35 @@ func TestGK01_ConcurrentIdempotencyLock(t *testing.T) {
 	if got := execCount.Load(); got != 1 {
 		t.Fatalf("GK-01: expected handler to execute exactly once, got %d", got)
 	}
+
+	t.Run("stale unlock does not release newer holder lock", func(t *testing.T) {
+		ctx := context.Background()
+		store1 := idempotency.NewCacheStore(rc)
+		store2 := idempotency.NewCacheStore(rc)
+
+		ok1, err := store1.Lock(ctx, "expiring-key", 50*time.Millisecond)
+		if err != nil || !ok1 {
+			t.Fatalf("store1 lock failed: ok=%v err=%v", ok1, err)
+		}
+		mr.FastForward(100 * time.Millisecond)
+
+		ok2, err := store2.Lock(ctx, "expiring-key", time.Minute)
+		if err != nil || !ok2 {
+			t.Fatalf("store2 lock failed: ok=%v err=%v", ok2, err)
+		}
+
+		// store1 unlocks after its own lock expired; must NOT delete store2's lock.
+		if err := store1.Unlock(ctx, "expiring-key"); err != nil {
+			t.Fatalf("store1 unlock error: %v", err)
+		}
+
+		store3 := idempotency.NewCacheStore(rc)
+		ok3, err := store3.Lock(ctx, "expiring-key", time.Minute)
+		if err != nil {
+			t.Fatalf("store3 lock error: %v", err)
+		}
+		if ok3 {
+			t.Fatal("GK-01: stale unlock deleted store2's active lock")
+		}
+	})
 }

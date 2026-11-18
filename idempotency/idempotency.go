@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/dhawalhost/gokit/cache"
 )
 
@@ -148,12 +150,17 @@ func (s *InMemoryStore) Unlock(_ context.Context, key string) error {
 
 // CacheStore implements Store backed by any cache.Cache backend (e.g. Redis).
 type CacheStore struct {
-	cache cache.Cache
+	cache  cache.Cache
+	mu     sync.Mutex
+	tokens map[string]string
 }
 
 // NewCacheStore creates an Idempotency Store backed by cache.Cache.
 func NewCacheStore(c cache.Cache) *CacheStore {
-	return &CacheStore{cache: c}
+	return &CacheStore{
+		cache:  c,
+		tokens: make(map[string]string),
+	}
 }
 
 // Get retrieves a previously cached response for key from the cache.
@@ -169,9 +176,28 @@ func (c *CacheStore) Get(ctx context.Context, key string) (*Response, bool, erro
 	return &resp, true, nil
 }
 
-// Lock attempts to acquire an in-flight lock for key in the cache.
+// Lock attempts to acquire an in-flight lock for key in the cache using an atomic
+// SetNX primitive when available.
 func (c *CacheStore) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
 	lockKey := "idemp:lock:" + key
+	token := uuid.NewString()
+
+	if locker, ok := c.cache.(cache.AtomicLocker); ok {
+		acquired, err := locker.SetNX(ctx, lockKey, token, ttl)
+		if err != nil || !acquired {
+			return false, err
+		}
+		c.mu.Lock()
+		if c.tokens == nil {
+			c.tokens = make(map[string]string)
+		}
+		c.tokens[key] = token
+		c.mu.Unlock()
+		return true, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	exists, err := c.cache.Exists(ctx, lockKey)
 	if err != nil {
 		return false, err
@@ -179,10 +205,33 @@ func (c *CacheStore) Lock(ctx context.Context, key string, ttl time.Duration) (b
 	if exists {
 		return false, nil
 	}
-	if err := c.cache.Set(ctx, lockKey, "locked", ttl); err != nil {
+	if err := c.cache.Set(ctx, lockKey, token, ttl); err != nil {
 		return false, err
 	}
+	if c.tokens == nil {
+		c.tokens = make(map[string]string)
+	}
+	c.tokens[key] = token
 	return true, nil
+}
+
+func (c *CacheStore) releaseLock(ctx context.Context, key string) error {
+	lockKey := "idemp:lock:" + key
+	c.mu.Lock()
+	token, hasToken := c.tokens[key]
+	if hasToken {
+		delete(c.tokens, key)
+	}
+	c.mu.Unlock()
+
+	if locker, ok := c.cache.(cache.AtomicLocker); ok {
+		if !hasToken {
+			return nil
+		}
+		_, err := locker.CompareAndDelete(ctx, lockKey, token)
+		return err
+	}
+	return c.cache.Delete(ctx, lockKey)
 }
 
 // Save stores the completed response for key with the given TTL in the cache.
@@ -191,13 +240,13 @@ func (c *CacheStore) Save(ctx context.Context, key string, resp *Response, ttl t
 	if err != nil {
 		return fmt.Errorf("idempotency: marshal response: %w", err)
 	}
-	_ = c.cache.Delete(ctx, "idemp:lock:"+key)
+	_ = c.releaseLock(ctx, key)
 	return c.cache.Set(ctx, "idemp:resp:"+key, string(data), ttl)
 }
 
 // Unlock releases an in-flight lock for key from the cache.
 func (c *CacheStore) Unlock(ctx context.Context, key string) error {
-	return c.cache.Delete(ctx, "idemp:lock:"+key)
+	return c.releaseLock(ctx, key)
 }
 
 type responseRecorder struct {
