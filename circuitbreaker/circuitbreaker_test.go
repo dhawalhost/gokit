@@ -1,7 +1,10 @@
 package circuitbreaker_test
 
 import (
+	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,4 +188,146 @@ func TestCircuitBreaker_ExecutionModes_TableDriven(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, tc.run)
 	}
+}
+
+func TestGK13_CircuitBreakerHalfOpenAndCallback(t *testing.T) {
+	t.Run("half-open admits at most MaxHalfOpenRequests (default 1)", func(t *testing.T) {
+		cb := circuitbreaker.New(circuitbreaker.Config{
+			Name:         "gk13-halfopen",
+			MaxFailures:  1,
+			ResetTimeout: 10 * time.Millisecond,
+		})
+		_ = cb.Execute(func() error { return errors.New("trip") })
+		time.Sleep(20 * time.Millisecond)
+
+		var entered atomic.Int32
+		release := make(chan struct{})
+		const total = 100
+		var wg sync.WaitGroup
+		wg.Add(total)
+		start := make(chan struct{})
+		for i := 0; i < total; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = cb.Execute(func() error {
+					entered.Add(1)
+					<-release
+					return nil
+				})
+			}()
+		}
+		close(start)
+		time.Sleep(30 * time.Millisecond)
+		close(release)
+		wg.Wait()
+
+		if got := entered.Load(); got != 1 {
+			t.Fatalf("GK-13: expected at most 1 call admitted in half-open state, got %d", got)
+		}
+	})
+
+	t.Run("OnStateChange calling State() does not deadlock", func(t *testing.T) {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			var cb *circuitbreaker.CircuitBreaker
+			cb = circuitbreaker.New(circuitbreaker.Config{
+				Name:        "gk13-callback",
+				MaxFailures: 1,
+				OnStateChange: func(_ string, _, _ circuitbreaker.State) {
+					_ = cb.State()
+				},
+			})
+			_ = cb.Execute(func() error { return errors.New("trip") })
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+			t.Fatal("GK-13: OnStateChange deadlocked calling cb.State()")
+		}
+	})
+
+	t.Run("configured MaxHalfOpenRequests=3 caps concurrent probes and recovers", func(t *testing.T) {
+		cb := circuitbreaker.New(circuitbreaker.Config{
+			Name:                "gk13-n3",
+			MaxFailures:         1,
+			ResetTimeout:        10 * time.Millisecond,
+			MaxHalfOpenRequests: 3,
+		})
+		_ = cb.Execute(func() error { return errors.New("trip") })
+		time.Sleep(20 * time.Millisecond)
+
+		var entered atomic.Int32
+		release := make(chan struct{})
+		const total = 100
+		var wg sync.WaitGroup
+		wg.Add(total)
+		start := make(chan struct{})
+		for i := 0; i < total; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = cb.Execute(func() error {
+					entered.Add(1)
+					<-release
+					return nil
+				})
+			}()
+		}
+		close(start)
+		time.Sleep(30 * time.Millisecond)
+		close(release)
+		wg.Wait()
+
+		if got := entered.Load(); got != 3 {
+			t.Fatalf("GK-13: expected exactly 3 probes admitted in half-open, got %d", got)
+		}
+		if cb.State() != circuitbreaker.StateClosed {
+			t.Fatalf("GK-13: expected StateClosed after 3 successful probes, got %v", cb.State())
+		}
+	})
+
+	t.Run("rolling FailureRatio trips without consecutive failures and ExecuteCtx cancels cleanly", func(t *testing.T) {
+		cb := circuitbreaker.New(circuitbreaker.Config{
+			Name:             "gk13-ratio",
+			MaxFailures:      100,
+			FailureRatio:     0.5,
+			MinRequests:      4,
+			ExecutionTimeout: 20 * time.Millisecond,
+		})
+
+		// Alternate failure/success (50% failure ratio over 4 samples -> trips!).
+		_ = cb.ExecuteCtx(context.Background(), func(ctx context.Context) error { return errors.New("fail-1") })
+		_ = cb.ExecuteCtx(context.Background(), func(ctx context.Context) error { return nil })
+		_ = cb.ExecuteCtx(context.Background(), func(ctx context.Context) error { return errors.New("fail-2") })
+		_ = cb.ExecuteCtx(context.Background(), func(ctx context.Context) error { return nil })
+		// Wait: on 4th call (nil) failures=2 out of 4 = 0.5; check on failure or next failure:
+		_ = cb.ExecuteCtx(context.Background(), func(ctx context.Context) error { return errors.New("fail-3") })
+		if cb.State() != circuitbreaker.StateOpen {
+			t.Fatalf("GK-13: expected StateOpen once failure ratio >= 0.5, got %v", cb.State())
+		}
+
+		// ExecuteCtx cancels context on ExecutionTimeout without goroutine leak.
+		cbTimeout := circuitbreaker.New(circuitbreaker.Config{
+			Name:             "gk13-ctx-timeout",
+			MaxFailures:      5,
+			ExecutionTimeout: 15 * time.Millisecond,
+		})
+		ctxCanceled := make(chan struct{})
+		err := cbTimeout.ExecuteCtx(context.Background(), func(ctx context.Context) error {
+			<-ctx.Done()
+			close(ctxCanceled)
+			return ctx.Err()
+		})
+		if !errors.Is(err, circuitbreaker.ErrExecutionTimeout) {
+			t.Fatalf("GK-13: expected ErrExecutionTimeout, got %v", err)
+		}
+		select {
+		case <-ctxCanceled:
+		default:
+			t.Fatal("GK-13: ExecuteCtx did not cancel fn context on timeout")
+		}
+	})
 }
