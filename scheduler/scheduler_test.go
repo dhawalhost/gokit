@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/dhawalhost/gokit/distlock"
 )
 
@@ -408,4 +411,76 @@ func TestScheduler_LifecycleErrors(t *testing.T) {
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatalf("second stop: %v", err)
 	}
+}
+
+func TestGK09_SchedulerPerTickLockAndRedisOutage(t *testing.T) {
+	t.Skip("GK-09: pending fix")
+
+	t.Run("two schedulers 500ms apart run short job once per tick", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		defer func() { _ = rdb.Close() }()
+		locker := distlock.NewRedisLocker(rdb)
+
+		base := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		var runs atomic.Int32
+
+		s1 := New(WithLocker(locker))
+		s1.timeNow = func() time.Time { return base }
+		s2 := New(WithLocker(locker))
+		s2.timeNow = func() time.Time { return base }
+
+		job := func(_ context.Context) error {
+			runs.Add(1)
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		}
+		if _, err := s1.RegisterFunc("@every 2s", job, WithJobLock("gk09:tick", 5*time.Second)); err != nil {
+			t.Fatalf("s1 register: %v", err)
+		}
+		if _, err := s2.RegisterFunc("@every 2s", job, WithJobLock("gk09:tick", 5*time.Second)); err != nil {
+			t.Fatalf("s2 register: %v", err)
+		}
+
+		tickTime := base.Add(2 * time.Second)
+		s1.tick(context.Background(), tickTime)
+		time.Sleep(150 * time.Millisecond) // s1 finishes 100ms job
+		// s2 evaluates the same tick 500ms later
+		s2.tick(context.Background(), tickTime.Add(500*time.Millisecond))
+		s1.activeWg.Wait()
+		s2.activeWg.Wait()
+
+		if got := runs.Load(); got != 1 {
+			t.Fatalf("GK-09: expected 1 execution across clock-skewed replicas, got %d", got)
+		}
+	})
+
+	t.Run("redis outage surfaces error instead of locked_by_peer skip", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		defer func() { _ = rdb.Close() }()
+		locker := distlock.NewRedisLocker(rdb)
+
+		var skipped, failed atomic.Bool
+		s := New(
+			WithLocker(locker),
+			WithHook(Hook{
+				OnJobSkipped: func(_ JobSnapshot, _ string) { skipped.Store(true) },
+				OnJobFailure: func(_ JobSnapshot, _ time.Duration, _ error) { failed.Store(true) },
+			}),
+		)
+		id, err := s.RegisterFunc("@daily", func(_ context.Context) error { return nil }, WithJobLock("gk09:down", time.Second))
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+
+		mr.Close()
+		err = s.RunJob(context.Background(), id)
+		if err == nil {
+			t.Fatal("GK-09: expected RunJob error when Redis is down")
+		}
+		if skipped.Load() || !failed.Load() {
+			t.Fatalf("GK-09: expected OnJobFailure=true and OnJobSkipped=false, got failed=%v skipped=%v", failed.Load(), skipped.Load())
+		}
+	})
 }

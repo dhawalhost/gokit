@@ -4,16 +4,21 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/dhawalhost/gokit/idempotency"
 	"github.com/dhawalhost/gokit/middleware"
+	"github.com/dhawalhost/gokit/multitenancy"
 	"github.com/dhawalhost/gokit/ratelimit"
 )
 
@@ -872,5 +877,155 @@ func TestIdempotencyMiddleware_TableDriven(t *testing.T) {
 				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
 			}
 		})
+	}
+}
+
+func TestGK02_IPKeyFunc_TrustedProxies(t *testing.T) {
+	t.Skip("GK-02: pending fix")
+
+	store := ratelimit.NewInMemoryStore()
+	defer store.Stop()
+
+	mw := middleware.RateLimit(middleware.RateLimitConfig{
+		RequestsPerSecond: 0.001,
+		Burst:             5,
+		Store:             store,
+	})(noopHandler)
+
+	var allowedCount, blockedCount int
+	for i := 0; i < 100; i++ {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "203.0.113.10:50000"
+		r.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
+		r.Header.Set("X-Real-IP", fmt.Sprintf("192.0.2.%d", i+1))
+		w := httptest.NewRecorder()
+		mw.ServeHTTP(w, r)
+		switch w.Code {
+		case http.StatusOK:
+			allowedCount++
+		case http.StatusTooManyRequests:
+			blockedCount++
+		default:
+			t.Fatalf("unexpected status %d", w.Code)
+		}
+	}
+
+	if allowedCount != 5 || blockedCount != 95 {
+		t.Fatalf("GK-02: expected 5 allowed and 95 blocked in shared bucket, got allowed=%d blocked=%d", allowedCount, blockedCount)
+	}
+}
+
+func TestGK03_TenantBoundToIdentity(t *testing.T) {
+	t.Skip("GK-03: pending fix")
+
+	secret := "gk03-secret"
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":       "user-1",
+		"tenant_id": "tenant-a",
+		"exp":       time.Now().Add(time.Hour).Unix(),
+	})
+	tokenStr, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	var seenTenant string
+	var handlerCalled bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		seenTenant, _ = multitenancy.FromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	for _, tc := range []struct {
+		name string
+		mw   func(http.Handler) http.Handler
+	}{
+		{name: "middleware.TenantID", mw: middleware.TenantID()},
+		{name: "multitenancy.RequireTenant", mw: multitenancy.RequireTenant()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seenTenant = ""
+			handlerCalled = false
+			chain := middleware.JWT(middleware.JWTConfig{SecretKey: []byte(secret)})(tc.mw(inner))
+
+			req := httptest.NewRequest(http.MethodGet, "/items", nil)
+			req.Header.Set("Authorization", "Bearer "+tokenStr)
+			req.Header.Set("X-Tenant-ID", "tenant-b")
+			rec := httptest.NewRecorder()
+			chain.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("GK-03 (%s): expected 403 Forbidden, got %d", tc.name, rec.Code)
+			}
+			if handlerCalled || seenTenant == "tenant-b" {
+				t.Fatalf("GK-03 (%s): handler called=%v seenTenant=%q, must never see tenant-b", tc.name, handlerCalled, seenTenant)
+			}
+		})
+	}
+}
+
+func TestGK04_TimeoutPanicAndLateWrite(t *testing.T) {
+	t.Skip("GK-04: pending fix")
+
+	t.Run("panic inside timeout is caught by recovery", func(t *testing.T) {
+		chain := middleware.Recovery(zap.NewNop())(
+			middleware.Timeout(time.Second)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				panic("boom inside timeout")
+			})),
+		)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("GK-04: expected 500 on panic, got %d", rec.Code)
+		}
+	})
+
+	t.Run("late writes after timeout do not reach client", func(t *testing.T) {
+		doneWriting := make(chan struct{})
+		chain := middleware.Timeout(20 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			defer close(doneWriting)
+			time.Sleep(50 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("late-body"))
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+		<-doneWriting
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GK-04: expected 503 Service Unavailable, got %d", rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "late-body") {
+			t.Fatalf("GK-04: client observed late handler write: %q", rec.Body.String())
+		}
+	})
+}
+
+func TestGK10_RateLimitFailOpenAndFailClosed(t *testing.T) {
+	t.Skip("GK-10: pending fix")
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { _ = rdb.Close() }()
+	store := ratelimit.NewRedisStore(rdb, time.Second)
+	mr.Close()
+
+	mw := middleware.RateLimit(middleware.RateLimitConfig{
+		RequestsPerSecond: 10,
+		Burst:             10,
+		Store:             store,
+	})(noopHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.1.2.3:1234"
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GK-10: expected default fail-open 200 OK when store is down, got %d", rec.Code)
 	}
 }

@@ -7,10 +7,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+
+	"github.com/dhawalhost/gokit/cache"
+	"github.com/dhawalhost/gokit/config"
 	"github.com/dhawalhost/gokit/idempotency"
 )
 
@@ -377,5 +383,48 @@ func TestStore_UnlockAndExpiration_TableDriven(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestGK01_ConcurrentIdempotencyLock(t *testing.T) {
+	t.Skip("GK-01: pending fix")
+
+	mr := miniredis.RunT(t)
+	rc, err := cache.NewRedis(config.RedisConfig{Addr: mr.Addr()})
+	if err != nil {
+		t.Fatalf("failed to create redis cache: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	store := idempotency.NewCacheStore(rc)
+	var execCount atomic.Int32
+	mw := idempotency.Middleware(idempotency.Config{
+		Store: store,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		execCount.Add(1)
+		time.Sleep(25 * time.Millisecond)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"charged":true}`))
+	}))
+
+	const workers = 50
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodPost, "/payments", strings.NewReader(`{"amount":100}`))
+			req.Header.Set("Idempotency-Key", "gk01-same-key")
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := execCount.Load(); got != 1 {
+		t.Fatalf("GK-01: expected handler to execute exactly once, got %d", got)
 	}
 }

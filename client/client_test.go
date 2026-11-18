@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -840,5 +841,72 @@ func TestClient_EdgeCases_TableDriven(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestGK05_AttemptTimeoutLargeBody(t *testing.T) {
+	t.Skip("GK-05: pending fix")
+
+	payload := bytes.Repeat([]byte("a"), 1<<20) // 1 MiB
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer ts.Close()
+
+	c := client.New(
+		client.WithAttemptTimeout(5*time.Second),
+		client.WithLogger(zap.NewNop()),
+	)
+
+	resp, err := c.Get(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatalf("GK-05: Get failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("GK-05: io.ReadAll failed: %v", err)
+	}
+	if len(body) != len(payload) {
+		t.Fatalf("GK-05: expected %d bytes, got %d", len(payload), len(body))
+	}
+}
+
+func TestGK06_MethodAwareRetries(t *testing.T) {
+	t.Skip("GK-06: pending fix")
+
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		hits.Add(1)
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				_ = conn.Close()
+				return
+			}
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	c := client.New(
+		client.WithRetryPolicy(client.RetryPolicy{
+			MaxRetries:           3,
+			InitialBackoff:       5 * time.Millisecond,
+			MaxBackoff:           10 * time.Millisecond,
+			RetryableStatusCodes: []int{http.StatusInternalServerError},
+		}),
+		client.WithLogger(zap.NewNop()),
+	)
+
+	_, err := c.Post(context.Background(), ts.URL, "application/json", strings.NewReader(`{"op":"charge"}`))
+	if err == nil {
+		t.Fatal("GK-06: expected error from dropped connection")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("GK-06: expected POST without Idempotency-Key to hit server exactly once, got %d", got)
 	}
 }

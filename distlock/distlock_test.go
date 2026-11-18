@@ -459,3 +459,81 @@ func TestLock_EdgeCases_TableDriven(t *testing.T) {
 		t.Run(tc.name, tc.run)
 	}
 }
+
+func TestGK07_LockLossCancelsContext(t *testing.T) {
+	t.Skip("GK-07: pending fix")
+
+	s := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	defer func() { _ = rdb.Close() }()
+
+	locker := distlock.NewRedisLocker(rdb)
+	ctxCanceled := make(chan struct{})
+
+	err := locker.WithLock(context.Background(), "gk07-key", 150*time.Millisecond, func(fnCtx context.Context) error {
+		s.FlushAll()
+		select {
+		case <-fnCtx.Done():
+			close(ctxCanceled)
+			return fnCtx.Err()
+		case <-time.After(150 * time.Millisecond):
+			return errors.New("context was not canceled after lock loss")
+		}
+	}, distlock.WithAutoRenew(20*time.Millisecond))
+
+	if err == nil {
+		t.Fatal("GK-07: expected WithLock error when lock is lost")
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("GK-07: fn context was not canceled within one renew interval after lock loss")
+	}
+}
+
+func TestGK08_AtomicFencingTokenAndError(t *testing.T) {
+	t.Skip("GK-08: pending fix")
+
+	s := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	defer func() { _ = rdb.Close() }()
+
+	locker := distlock.NewRedisLocker(rdb)
+	ctx := context.Background()
+
+	lock1, err := locker.Obtain(ctx, "gk08-res", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("obtain 1: %v", err)
+	}
+	f1 := lock1.(distlock.FencedLock).FencingToken()
+
+	// Verify cluster hash tag on keys in Redis.
+	hasTag := false
+	for _, k := range s.Keys() {
+		if k == "distlock:{gk08-res}" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Fatalf("GK-08: expected cluster hash tag key distlock:{gk08-res}, got %v", s.Keys())
+	}
+
+	// Wait for expiry and acquire again.
+	s.FastForward(100 * time.Millisecond)
+	lock2, err := locker.Obtain(ctx, "gk08-res", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("obtain 2: %v", err)
+	}
+	f2 := lock2.(distlock.FencedLock).FencingToken()
+	if f2 <= f1 {
+		t.Fatalf("GK-08: expected strictly increasing fencing tokens, got f1=%d f2=%d", f1, f2)
+	}
+	_ = lock2.Unlock(ctx)
+
+	// Corrupt fencing token key so INCR fails; Obtain must return error instead of token 0.
+	_ = s.Set("distlock:{gk08-res}:fencing_token", "not-an-integer")
+	_ = s.Set("distlock:gk08-res:fencing_token", "not-an-integer")
+	if _, err := locker.Obtain(ctx, "gk08-res", 50*time.Millisecond); err == nil {
+		t.Fatal("GK-08: expected Obtain to return error when fencing token INCR fails")
+	}
+}
