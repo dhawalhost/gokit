@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1174,6 +1178,189 @@ func TestGK10_RateLimitFailOpenAndFailClosed(t *testing.T) {
 			if w.Code != http.StatusServiceUnavailable {
 				t.Fatalf("GK-10: expected 503 Service Unavailable when fail-closed, got %d", w.Code)
 			}
+		}
+	})
+}
+
+func TestGK17_JWTIssuerAudienceLeeway(t *testing.T) {
+	secret := []byte("gk17-secret")
+	sign := func(claims jwt.MapClaims) string {
+		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		s, err := tok.SignedString(secret)
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		return s
+	}
+
+	mw := middleware.JWT(middleware.JWTConfig{
+		SecretKey: secret,
+		Issuer:    "https://auth.example.com",
+		Audience:  "billing-api",
+		Leeway:    30 * time.Second,
+	})(noopHandler)
+
+	cases := []struct {
+		name       string
+		claims     jwt.MapClaims
+		wantStatus int
+	}{
+		{
+			name: "valid issuer, audience, and expiry returns 200",
+			claims: jwt.MapClaims{
+				"sub": "u1",
+				"iss": "https://auth.example.com",
+				"aud": []string{"billing-api"},
+				"exp": time.Now().Add(time.Minute).Unix(),
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "wrong audience returns 401",
+			claims: jwt.MapClaims{
+				"sub": "u1",
+				"iss": "https://auth.example.com",
+				"aud": []string{"other-api"},
+				"exp": time.Now().Add(time.Minute).Unix(),
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "wrong issuer returns 401",
+			claims: jwt.MapClaims{
+				"sub": "u1",
+				"iss": "https://evil.example.com",
+				"aud": []string{"billing-api"},
+				"exp": time.Now().Add(time.Minute).Unix(),
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "expired within 30s leeway returns 200",
+			claims: jwt.MapClaims{
+				"sub": "u1",
+				"iss": "https://auth.example.com",
+				"aud": []string{"billing-api"},
+				"exp": time.Now().Add(-15 * time.Second).Unix(),
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "expired beyond 30s leeway returns 401",
+			claims: jwt.MapClaims{
+				"sub": "u1",
+				"iss": "https://auth.example.com",
+				"aud": []string{"billing-api"},
+				"exp": time.Now().Add(-45 * time.Second).Unix(),
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+sign(tc.claims))
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("GK-17: expected status %d, got %d", tc.wantStatus, rec.Code)
+			}
+		})
+	}
+
+	t.Run("NewJWKSKeyFunc caches keys and refreshes on rotation", func(t *testing.T) {
+		k1, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("rsa key 1: %v", err)
+		}
+		k2, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("rsa key 2: %v", err)
+		}
+
+		var rotate atomic.Bool
+		var fetches atomic.Int32
+		encodeKey := func(kid string, pub *rsa.PublicKey) map[string]string {
+			return map[string]string{
+				"kty": "RSA",
+				"kid": kid,
+				"use": "sig",
+				"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+			}
+		}
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fetches.Add(1)
+			keys := []map[string]string{encodeKey("kid-1", &k1.PublicKey)}
+			if rotate.Load() {
+				keys = append(keys, encodeKey("kid-2", &k2.PublicKey))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"keys": keys})
+		}))
+		defer srv.Close()
+
+		jwksMW := middleware.JWT(middleware.JWTConfig{
+			Algorithm: "RS256",
+			Issuer:    "https://issuer.example.com",
+			Audience:  "svc",
+			KeyFunc: middleware.NewJWKSKeyFunc(srv.URL,
+				middleware.WithJWKSCacheTTL(time.Minute),
+				middleware.WithJWKSMinRefreshInterval(0),
+			),
+		})(noopHandler)
+
+		signRSA := func(kid string, priv *rsa.PrivateKey) string {
+			tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+				"sub": "u1",
+				"iss": "https://issuer.example.com",
+				"aud": "svc",
+				"exp": time.Now().Add(time.Minute).Unix(),
+			})
+			tok.Header["kid"] = kid
+			s, err := tok.SignedString(priv)
+			if err != nil {
+				t.Fatalf("sign rsa: %v", err)
+			}
+			return s
+		}
+
+		// First two requests with kid-1 only fetch JWKS once (cached).
+		tok1 := signRSA("kid-1", k1)
+		for i := 0; i < 2; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+tok1)
+			rec := httptest.NewRecorder()
+			jwksMW.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("request %d with kid-1 expected 200, got %d", i, rec.Code)
+			}
+		}
+		if fetches.Load() != 1 {
+			t.Fatalf("GK-17: expected 1 cached JWKS fetch, got %d", fetches.Load())
+		}
+
+		// Rotate key to kid-2; KeyFunc refreshes and accepts kid-2.
+		rotate.Store(true)
+		tok2 := signRSA("kid-2", k2)
+		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req2.Header.Set("Authorization", "Bearer "+tok2)
+		rec2 := httptest.NewRecorder()
+		jwksMW.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("GK-17: expected 200 after JWKS key rotation, got %d", rec2.Code)
+		}
+
+		// Unknown kid returns 401.
+		tokUnknown := signRSA("kid-unknown", k2)
+		req3 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req3.Header.Set("Authorization", "Bearer "+tokUnknown)
+		rec3 := httptest.NewRecorder()
+		jwksMW.ServeHTTP(rec3, req3)
+		if rec3.Code != http.StatusUnauthorized {
+			t.Fatalf("GK-17: expected 401 for unknown kid, got %d", rec3.Code)
 		}
 	})
 }

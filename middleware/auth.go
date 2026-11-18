@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -22,6 +23,12 @@ type JWTConfig struct {
 	KeyFunc jwt.Keyfunc
 	// Algorithm is the expected signing algorithm (defaults to "HS256" if SecretKey is set, or "RS256" if PublicKey is set).
 	Algorithm string
+	// Issuer, when non-empty, requires the token's "iss" claim to match exactly.
+	Issuer string
+	// Audience, when non-empty, requires the token's "aud" claim to include this value.
+	Audience string
+	// Leeway configures acceptable clock skew when validating exp, nbf, and iat claims.
+	Leeway time.Duration
 	// ContextKey is the context key under which claims are stored (defaults to "claims").
 	ContextKey string
 }
@@ -67,6 +74,20 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 		}
 	}
 
+	parserOpts := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{cfg.Algorithm}),
+		jwt.WithExpirationRequired(),
+	}
+	if cfg.Issuer != "" {
+		parserOpts = append(parserOpts, jwt.WithIssuer(cfg.Issuer))
+	}
+	if cfg.Audience != "" {
+		parserOpts = append(parserOpts, jwt.WithAudience(cfg.Audience))
+	}
+	if cfg.Leeway > 0 {
+		parserOpts = append(parserOpts, jwt.WithLeeway(cfg.Leeway))
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -75,11 +96,7 @@ func JWT(cfg JWTConfig) func(http.Handler) http.Handler {
 				return
 			}
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-			token, err := jwt.Parse(tokenStr,
-				keyFunc,
-				jwt.WithValidMethods([]string{cfg.Algorithm}),
-				jwt.WithExpirationRequired(),
-			)
+			token, err := jwt.Parse(tokenStr, keyFunc, parserOpts...)
 			if err != nil || !token.Valid {
 				writeJSONError(w, http.StatusUnauthorized, `{"code":"UNAUTHORIZED","message":"invalid token"}`)
 				return
