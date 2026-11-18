@@ -4,7 +4,12 @@ import (
 	"context"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/dhawalhost/gokit/logger"
 )
 
 // RelayConfig configures the background outbox polling and dispatch relay.
@@ -16,6 +21,7 @@ type RelayConfig struct {
 	MaxBackoff    time.Duration // Cap on exponential backoff duration (default: 1m)
 	Retention     time.Duration // Age after which published messages are cleaned up (default: 7 * 24h, 0 to disable)
 	CleanInterval time.Duration // Interval to run cleanup of old published messages (default: 1h)
+	Logger        *zap.Logger   // Logger for background relay errors (defaults to logger.Global())
 }
 
 // Relay handles polling outbox messages from the Store and dispatching them through the Publisher.
@@ -23,6 +29,8 @@ type Relay struct {
 	store     Store
 	publisher Publisher
 	cfg       RelayConfig
+	log       *zap.Logger
+	errCount  atomic.Uint64
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -53,13 +61,37 @@ func NewRelay(store Store, publisher Publisher, cfg RelayConfig) *Relay {
 	if cfg.CleanInterval <= 0 {
 		cfg.CleanInterval = 1 * time.Hour
 	}
+	log := cfg.Logger
+	if log == nil {
+		log = logger.Global()
+	}
+	if log == nil {
+		log = zap.NewNop()
+	}
 
 	return &Relay{
 		store:     store,
 		publisher: publisher,
 		cfg:       cfg,
+		log:       log,
 		stopCh:    make(chan struct{}),
 	}
+}
+
+// Errors returns the cumulative number of store or publish errors encountered by the relay.
+func (r *Relay) Errors() uint64 {
+	return r.errCount.Load()
+}
+
+func (r *Relay) recordError(op string, err error, fields ...zap.Field) {
+	if err == nil {
+		return
+	}
+	r.errCount.Add(1)
+	logFields := make([]zap.Field, 0, 2+len(fields))
+	logFields = append(logFields, zap.String("op", op), zap.Error(err))
+	logFields = append(logFields, fields...)
+	r.log.Error("outbox relay error", logFields...)
 }
 
 // Start spawns the background polling and cleanup routines.
@@ -100,6 +132,7 @@ func (r *Relay) Stop() {
 func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 	messages, err := r.store.FetchPending(ctx, r.cfg.BatchSize)
 	if err != nil {
+		r.recordError("fetch_pending", err)
 		return 0, err
 	}
 	if len(messages) == 0 {
@@ -109,9 +142,13 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 	for _, msg := range messages {
 		pubErr := r.publisher.Publish(ctx, msg.Topic, msg.Key, msg.Payload, msg.Headers)
 		if pubErr == nil {
-			_ = r.store.MarkPublished(ctx, msg.ID)
+			if markErr := r.store.MarkPublished(ctx, msg.ID); markErr != nil {
+				r.recordError("mark_published", markErr, zap.String("message_id", msg.ID))
+			}
 			continue
 		}
+
+		r.recordError("publish", pubErr, zap.String("message_id", msg.ID), zap.String("topic", msg.Topic))
 
 		// Calculate exponential backoff with jitter
 		newRetry := msg.RetryCount + 1
@@ -129,7 +166,9 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 		jitter := time.Duration(rand.Int63n(int64(backoff/5 + 1))) //nolint:gosec // pseudo-random jitter is sufficient for retry backoff
 		nextRetry := time.Now().UTC().Add(backoff + jitter)
 
-		_ = r.store.MarkFailed(ctx, msg.ID, pubErr, nextRetry, isFinal)
+		if markErr := r.store.MarkFailed(ctx, msg.ID, pubErr, nextRetry, isFinal); markErr != nil {
+			r.recordError("mark_failed", markErr, zap.String("message_id", msg.ID))
+		}
 	}
 
 	return len(messages), nil
@@ -171,7 +210,9 @@ func (r *Relay) cleanLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			cutoff := time.Now().UTC().Add(-r.cfg.Retention)
-			_, _ = r.store.Cleanup(ctx, cutoff)
+			if _, err := r.store.Cleanup(ctx, cutoff); err != nil {
+				r.recordError("cleanup", err)
+			}
 		}
 	}
 }

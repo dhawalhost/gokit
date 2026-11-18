@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`diagnostics`**: Runtime memory watchdog, automated watermark heap dumping, goroutine leak detector, and authenticated `pprof` router.
+- **`pipeline`**: Concurrent stream ETL pipeline with bounded backpressure, tumbling/sliding temporal windows, fan-in/fan-out, and dead-letter queues.
+- **`cache`**: Added `cache.AtomicLocker` (`SetNX`, `CompareAndDelete`) and `cache.PrefixClearer` (`ClearPrefix` via `SCAN` + `UNLINK`) interfaces implemented on `RedisCache`, `TwoTierCache`, `multitenancy.ScopedCache` (plus `ClearTenant`), and `multitenancy.ContextScopedCache`.
+- **`middleware`**:
+  - Added `NewTrustedIPKeyFunc(trustedProxies)` and `RateLimitConfig.TrustedProxies` for right-to-left `X-Forwarded-For` parsing behind trusted proxies (`GK-02`).
+  - Added `RateLimitConfig.FailOpen`, `RateLimitConfig.FailClosed`, `RateLimitConfig.Logger`, `RateLimitConfig.OnStoreError`, `RateLimitStoreErrors()`, and `Bool()` (`GK-10`).
+  - Added `JWTConfig.Issuer`, `JWTConfig.Audience`, `JWTConfig.Leeway`, and `NewJWKSKeyFunc` with TTL caching and rate-limited refresh (`GK-17`).
+- **`multitenancy`**: Added `TenantResolver`, `WithTenantResolver`, `WithTenantClaim`, `WithTrustHeader`, `WithClaimsMap`, `ClaimsMapFromContext`, and `ResolveRequestTenant` (`GK-03`).
+- **`client`**: Added `RetryPolicy.RetryableMethods`, `RetryPolicy.RetryNonIdempotent`, and `WithRetryNonIdempotent` (`GK-06`).
+- **`distlock`**: Added `Lock.Lost() <-chan struct{}` and `BaseLock.RenewErrors()` (`GK-07`).
+- **`circuitbreaker`**: Added `Config.MaxHalfOpenRequests`, `Config.FailureRatio`, `Config.MinRequests`, `Config.RollingWindow`, and `ExecuteCtx` (`GK-13`).
+- **`observability`**: Added `WithInsecure()`, `WithServiceVersion()`, and `WithDeploymentEnvironment()` tracer options plus `TelemetryConfig.ServiceVersion`, `Environment`, and `Insecure` (`GK-16`).
+- **`outbox`**: Added `RelayConfig.Logger` and `Relay.Errors()` atomic error counter for background poll/cleanup loops.
+
+### Changed
+
+- **Build & CI**: Aligned `go.mod` to `go 1.26.0`, updated `.github/workflows/ci.yml` to run `go test -race ./...` across all packages and enforce `go mod tidy -diff`.
+- **`idempotency`**: Replaced non-atomic `Exists` + `Set` lock acquisition in `CacheStore` with atomic `SetNX` and compare-and-delete tokens (`GK-01`); enforced 1 MiB default body limit (`413`), tenant+subject key scoping, `503` on store errors, and skipped caching `>= 500` responses unless `Cache5xx` is enabled (`GK-12`).
+- **`middleware`**:
+  - `IPKeyFunc` now defaults strictly to `r.RemoteAddr` without trusting client-supplied `X-Forwarded-For`/`X-Real-IP` headers (`GK-02`).
+  - `TenantID` and `multitenancy.RequireTenant` validate tenant identity against authenticated JWT claims and return `403 Forbidden` on mismatch (`GK-03`).
+  - `Timeout` now buffers headers/writes under a mutex, drops late writes (`http.ErrHandlerTimeout`), returns `503 Service Unavailable`, and re-panics on the serving goroutine (`GK-04`).
+  - `RateLimit` defaults to fail-open on store errors and returns `503 Service Unavailable` when fail-closed (`GK-10`).
+- **`client`**: Kept `Timeout` and `AttemptTimeout` contexts alive until `resp.Body.Close()` (`GK-05`), and restricted automatic retries to idempotent methods (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`) or requests carrying an `Idempotency-Key` header (`GK-06`).
+- **`distlock`**: `WithLock` enables auto-renewal and cancels the handler context on lock loss (`GK-07`); `RedisLocker.Obtain` acquires the lock and increments the fencing token atomically via Lua with `{key}` Redis Cluster hash tags and surfaces errors (`GK-08`).
+- **`scheduler`**: Keyed distributed job locks per scheduled tick with auto-renewal, held per-tick locks until TTL expiry, and surfaced lock backend outages via `OnJobFailure` instead of skipping (`GK-09`).
+- **`outbox`**: Ordered composite index `idx_outbox_scheduled` as `(status, scheduled_at)` with a separate `idx_outbox_topic` (`GK-11`).
+- **`circuitbreaker`**: Capped half-open trial concurrency and invoked `OnStateChange` outside internal mutex locks (`GK-13`).
+- **`cache`**: Removed `Flush(ctx)` from the `cache.Cache` interface in favor of prefix-scoped `ClearPrefix` (`GK-14`).
+- **`ratelimit`**: Fixed `InMemoryStore` cleanup start/stop races with `sync.Once`, and switched `RedisStore` to constant-space GCRA using Redis server `TIME` (`GK-15`).
+- **`observability`**: Defaulted `InitTracer` to TLS and `ParentBased(TraceIDRatioBased(0.1))` sampling while honoring `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_RESOURCE_ATTRIBUTES` (`GK-16`).
+
+### Deprecated
+
+- **`cache` & `multitenancy`**: `RedisCache.Flush`, `TwoTierCache.Flush`, `ScopedCache.Flush`, and `ContextScopedCache.Flush` are deprecated in favor of `ClearPrefix` / `ClearTenant` (`GK-14`).
+
+---
+
 ## [v0.9.0] - 2026-10-26
 
 ### Added

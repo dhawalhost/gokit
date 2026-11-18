@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/dhawalhost/gokit/outbox"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -554,5 +556,90 @@ func TestRelay_ConfigDefaultsAndDoubleStart_TableDriven(t *testing.T) {
 			relay.Start(ctx) // Idempotent second call returns immediately
 			relay.Stop()
 		})
+	}
+}
+
+type failingOutboxStore struct {
+	fetchErr   error
+	markPubErr error
+	markFail   error
+	cleanupErr error
+	msgs       []*outbox.Message
+}
+
+func (f *failingOutboxStore) Save(_ context.Context, _ *outbox.Message) error { return nil }
+func (f *failingOutboxStore) FetchPending(_ context.Context, _ int) ([]*outbox.Message, error) {
+	if f.fetchErr != nil {
+		return nil, f.fetchErr
+	}
+	return f.msgs, nil
+}
+func (f *failingOutboxStore) MarkPublished(_ context.Context, _ string) error { return f.markPubErr }
+func (f *failingOutboxStore) MarkFailed(_ context.Context, _ string, _ error, _ time.Time, _ bool) error {
+	return f.markFail
+}
+func (f *failingOutboxStore) Cleanup(_ context.Context, _ time.Time) (int64, error) {
+	return 0, f.cleanupErr
+}
+
+func TestOutboxRelay_ErrorLoggingAndCounter(t *testing.T) {
+	core, logs := observer.New(zap.ErrorLevel)
+	log := zap.New(core)
+
+	store := &failingOutboxStore{
+		markPubErr: errors.New("mark published failed"),
+		markFail:   errors.New("mark failed failed"),
+		cleanupErr: errors.New("cleanup failed"),
+		msgs: []*outbox.Message{
+			{ID: "m1", Topic: "orders", Payload: []byte("1")},
+			{ID: "m2", Topic: "orders", Payload: []byte("2")},
+		},
+	}
+
+	// 1st message publishes cleanly then MarkPublished errors (+1); 2nd message fails publish (+1) then MarkFailed errors (+1).
+	pub := &mockPublisher{failCount: 0}
+	var call int
+	relay := outbox.NewRelay(store, outbox.PublisherFunc(func(_ context.Context, _, _ string, _ []byte, _ map[string]string) error {
+		call++
+		if call == 2 {
+			return errors.New("broker down")
+		}
+		return nil
+	}), outbox.RelayConfig{
+		PollInterval:  15 * time.Millisecond,
+		CleanInterval: 15 * time.Millisecond,
+		Retention:     time.Hour,
+		Logger:        log,
+	})
+	_ = pub
+
+	if _, err := relay.ProcessBatch(context.Background()); err != nil {
+		t.Fatalf("ProcessBatch returned unexpected err: %v", err)
+	}
+	if got := relay.Errors(); got != 3 {
+		t.Fatalf("expected 3 errors (mark_published, publish, mark_failed), got %d", got)
+	}
+
+	// FetchPending error increments counter.
+	store.fetchErr = errors.New("db down")
+	if _, err := relay.ProcessBatch(context.Background()); err == nil {
+		t.Fatal("expected FetchPending error")
+	}
+	if got := relay.Errors(); got != 4 {
+		t.Fatalf("expected 4 errors after FetchPending failure, got %d", got)
+	}
+
+	// Background cleanLoop logs and counts Cleanup errors.
+	ctx, cancel := context.WithCancel(context.Background())
+	relay.Start(ctx)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	relay.Stop()
+
+	if relay.Errors() <= 4 {
+		t.Fatalf("expected background loops to increment error count past 4, got %d", relay.Errors())
+	}
+	if logs.Len() == 0 {
+		t.Fatal("expected structured zap error logs from outbox relay")
 	}
 }
