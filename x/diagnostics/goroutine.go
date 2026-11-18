@@ -44,7 +44,11 @@ func parseGoroutineStacks(raw []byte) map[string]string {
 		}
 		lines := bytes.SplitN(trimmed, []byte("\n"), 2)
 		header := string(lines[0])
-		result[header] = string(trimmed)
+		key := header
+		if fields := strings.Fields(header); len(fields) >= 2 && fields[0] == "goroutine" {
+			key = fields[1]
+		}
+		result[key] = string(trimmed)
 	}
 
 	return result
