@@ -15,7 +15,7 @@ require (
 	github.com/matoous/go-nanoid/v2 v2.1.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
 
 replace github.com/dhawalhost/gokit => ..
