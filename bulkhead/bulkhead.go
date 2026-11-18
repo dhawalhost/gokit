@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 var (
@@ -15,14 +16,16 @@ var (
 type Bulkhead struct {
 	maxConcurrent int
 	maxQueue      int
+	maxQueueWait  time.Duration
 	sem           chan struct{}
 	queue         chan struct{}
 }
 
 // Config configures a Bulkhead instance.
 type Config struct {
-	MaxConcurrent int // Maximum allowed in-flight concurrent executions (e.g. 10)
-	MaxQueue      int // Maximum waiting queue size when concurrency is full (0 to reject immediately)
+	MaxConcurrent int           // Maximum allowed in-flight concurrent executions (e.g. 10)
+	MaxQueue      int           // Maximum waiting queue size when concurrency is full (0 to reject immediately)
+	MaxQueueWait  time.Duration // Maximum time a request may wait in the queue before ErrBulkheadFull is returned (0 = unbounded)
 }
 
 // New creates a new Bulkhead limiter.
@@ -39,6 +42,7 @@ func New(cfg Config) *Bulkhead {
 	return &Bulkhead{
 		maxConcurrent: cfg.MaxConcurrent,
 		maxQueue:      cfg.MaxQueue,
+		maxQueueWait:  cfg.MaxQueueWait,
 		sem:           make(chan struct{}, cfg.MaxConcurrent),
 		queue:         queueChan,
 	}
@@ -70,6 +74,20 @@ func (b *Bulkhead) Execute(ctx context.Context, fn func() error) error {
 	}
 
 	// 4. Wait for execution slot from queue
+	if b.maxQueueWait > 0 {
+		timer := time.NewTimer(b.maxQueueWait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return ErrBulkheadFull
+		case b.sem <- struct{}{}:
+			defer func() { <-b.sem }()
+			return fn()
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

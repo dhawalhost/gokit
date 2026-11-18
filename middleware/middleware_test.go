@@ -1364,3 +1364,100 @@ func TestGK17_JWTIssuerAudienceLeeway(t *testing.T) {
 		}
 	})
 }
+
+func TestRateLimit_DetailedHeadersCostAndFallback(t *testing.T) {
+	t.Run("DetailedStore emits Limit, Remaining, Reset, and dynamic Retry-After with CostFunc", func(t *testing.T) {
+		store := ratelimit.NewInMemoryStoreWithTTL(time.Minute)
+		defer store.Stop()
+
+		mw := middleware.RateLimit(middleware.RateLimitConfig{
+			RequestsPerSecond: 1,
+			Burst:             5,
+			Store:             store,
+			CostFunc: func(r *http.Request) int {
+				if r.URL.Path == "/search" {
+					return 3
+				}
+				return 1
+			},
+		})(noopHandler)
+
+		req1 := httptest.NewRequest(http.MethodGet, "/search", nil)
+		req1.RemoteAddr = "203.0.113.10:1234"
+		rec1 := httptest.NewRecorder()
+		mw.ServeHTTP(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("expected 200 on first weighted call, got %d", rec1.Code)
+		}
+		if rec1.Header().Get("X-RateLimit-Limit") != "5" {
+			t.Fatalf("expected X-RateLimit-Limit=5, got %q", rec1.Header().Get("X-RateLimit-Limit"))
+		}
+		if rec1.Header().Get("X-RateLimit-Remaining") != "2" {
+			t.Fatalf("expected X-RateLimit-Remaining=2, got %q", rec1.Header().Get("X-RateLimit-Remaining"))
+		}
+		if rec1.Header().Get("X-RateLimit-Reset") == "" {
+			t.Fatal("expected non-empty X-RateLimit-Reset header")
+		}
+
+		// Second weighted search (cost 3) exceeds remaining 2 -> 429 with dynamic Retry-After.
+		req2 := httptest.NewRequest(http.MethodGet, "/search", nil)
+		req2.RemoteAddr = "203.0.113.10:1234"
+		rec2 := httptest.NewRecorder()
+		mw.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 on exhausted weighted call, got %d", rec2.Code)
+		}
+		if rec2.Header().Get("Retry-After") != "1" {
+			t.Fatalf("expected Retry-After=1, got %q", rec2.Header().Get("Retry-After"))
+		}
+		if rec2.Header().Get("X-RateLimit-Remaining") != "2" {
+			t.Fatalf("expected X-RateLimit-Remaining=2, got %q", rec2.Header().Get("X-RateLimit-Remaining"))
+		}
+	})
+
+	t.Run("FallbackStore enforces limit/node_count when primary store fails open", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{
+			Addr:        mr.Addr(),
+			MaxRetries:  0,
+			DialTimeout: 5 * time.Millisecond,
+		})
+		defer func() { _ = rdb.Close() }()
+		downStore := ratelimit.NewRedisStore(rdb, time.Second)
+		mr.Close()
+
+		fb := ratelimit.NewInMemoryStoreWithTTL(time.Minute)
+		defer fb.Stop()
+
+		mw := middleware.RateLimit(middleware.RateLimitConfig{
+			RequestsPerSecond: 1,
+			Burst:             10,
+			Store:             downStore,
+			FallbackStore:     fb,
+			FallbackNodeCount: 5, // per-node burst = 10/5 = 2, rps = 0.2
+			Logger:            zap.NewNop(),
+		})(noopHandler)
+
+		for i := 0; i < 2; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = "198.51.100.5:4321"
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("fallback request %d expected 200, got %d", i, rec.Code)
+			}
+		}
+
+		// 3rd immediate request exceeds per-node burst of 2 -> 429 even though Redis is down.
+		req3 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req3.RemoteAddr = "198.51.100.5:4321"
+		rec3 := httptest.NewRecorder()
+		mw.ServeHTTP(rec3, req3)
+		if rec3.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 from per-node FallbackStore, got %d", rec3.Code)
+		}
+		if rec3.Header().Get("X-RateLimit-Limit") != "2" {
+			t.Fatalf("expected fallback X-RateLimit-Limit=2, got %q", rec3.Header().Get("X-RateLimit-Limit"))
+		}
+	})
+}

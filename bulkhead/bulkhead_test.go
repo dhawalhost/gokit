@@ -2,6 +2,7 @@ package bulkhead_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -290,5 +291,32 @@ func TestBulkhead_DefaultConfig_TableDriven(t *testing.T) {
 				t.Fatal("expected non-nil bulkhead")
 			}
 		})
+	}
+}
+
+func TestBulkhead_MaxQueueWait(t *testing.T) {
+	b := bulkhead.New(bulkhead.Config{
+		MaxConcurrent: 1,
+		MaxQueue:      2,
+		MaxQueueWait:  15 * time.Millisecond,
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = b.Execute(context.Background(), func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	err := b.Execute(context.Background(), func() error {
+		return nil
+	})
+	close(release)
+	if !errors.Is(err, bulkhead.ErrBulkheadFull) {
+		t.Fatalf("expected ErrBulkheadFull after MaxQueueWait, got %v", err)
 	}
 }

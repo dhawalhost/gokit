@@ -137,6 +137,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	var lastResp *http.Response
 	var lastErr error
 	maxAttempts := c.cfg.Retry.MaxRetries + 1
+	if c.cfg.Retry.Budget != nil {
+		c.cfg.Retry.Budget.RecordRequest()
+	}
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// If retrying, reset the request body
@@ -180,6 +183,17 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 
 		// Check if the result is retryable
 		if attempt < c.cfg.Retry.MaxRetries && c.cfg.Retry.isRetryable(ctx, req, resp, err) {
+			if c.cfg.Retry.Budget != nil && !c.cfg.Retry.Budget.TryAcquireRetry() {
+				c.cfg.Logger.Warn("outbound retry skipped: retry budget exhausted",
+					zap.String("service", c.cfg.Name),
+					zap.String("method", req.Method),
+					zap.String("url", req.URL.String()),
+					zap.Int("attempt", attempt+1),
+				)
+				lastResp = resp
+				lastErr = err
+				break
+			}
 			backoff := c.cfg.Retry.calculateBackoff(attempt, resp)
 
 			c.cfg.Logger.Warn("outbound HTTP request failed, retrying",

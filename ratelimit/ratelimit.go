@@ -3,17 +3,33 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
 )
 
+// Result describes the outcome of a rate-limit evaluation.
+type Result struct {
+	Allowed    bool
+	Limit      int
+	Remaining  int
+	RetryAfter time.Duration
+	ResetAfter time.Duration
+}
+
 // Store is the interface implemented by rate-limit backends.
 type Store interface {
 	// Allow reports whether the request identified by key should be allowed,
 	// given the sustained rate (requests per second) and burst size.
 	Allow(ctx context.Context, key string, rps float64, burst int) (bool, error)
+}
+
+// DetailedStore is an optional extension of Store supporting weighted costs and rich quota metadata.
+type DetailedStore interface {
+	Store
+	AllowN(ctx context.Context, key string, cost int, rps float64, burst int) (Result, error)
 }
 
 type limiterEntry struct {
@@ -103,10 +119,24 @@ func (s *InMemoryStore) Stop() {
 }
 
 // Allow reports whether key should be allowed under the given rate and burst.
-func (s *InMemoryStore) Allow(_ context.Context, key string, rps float64, burst int) (bool, error) {
+func (s *InMemoryStore) Allow(ctx context.Context, key string, rps float64, burst int) (bool, error) {
+	res, err := s.AllowN(ctx, key, 1, rps, burst)
+	return res.Allowed, err
+}
+
+// AllowN consumes cost tokens if available and returns full quota metadata.
+func (s *InMemoryStore) AllowN(_ context.Context, key string, cost int, rps float64, burst int) (Result, error) {
+	if burst <= 0 {
+		return Result{Limit: 0, Remaining: 0}, nil
+	}
+	if cost < 1 {
+		cost = 1
+	}
+
 	// Start cleanup on first use (safe under concurrent callers via sync.Once)
 	s.startCleanup()
 
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -114,16 +144,66 @@ func (s *InMemoryStore) Allow(_ context.Context, key string, rps float64, burst 
 	if !exists {
 		entry = &limiterEntry{
 			limiter:  rate.NewLimiter(rate.Limit(rps), burst),
-			lastSeen: time.Now(),
+			lastSeen: now,
 		}
 		s.limiters[key] = entry
 	} else {
-		entry.lastSeen = time.Now()
+		entry.lastSeen = now
 		// Update limiter parameters if they changed
 		if entry.limiter.Limit() != rate.Limit(rps) || entry.limiter.Burst() != burst {
 			entry.limiter = rate.NewLimiter(rate.Limit(rps), burst)
 		}
 	}
 
-	return entry.limiter.Allow(), nil
+	reservation := entry.limiter.ReserveN(now, cost)
+	if !reservation.OK() {
+		rem := clampTokens(entry.limiter.TokensAt(now))
+		resetAfter := resetDuration(rps, burst, entry.limiter.TokensAt(now))
+		return Result{
+			Allowed:    false,
+			Limit:      burst,
+			Remaining:  rem,
+			RetryAfter: resetAfter,
+			ResetAfter: resetAfter,
+		}, nil
+	}
+
+	delay := reservation.DelayFrom(now)
+	if delay > 0 {
+		reservation.CancelAt(now)
+		tokens := entry.limiter.TokensAt(now)
+		return Result{
+			Allowed:    false,
+			Limit:      burst,
+			Remaining:  clampTokens(tokens),
+			RetryAfter: delay,
+			ResetAfter: resetDuration(rps, burst, tokens),
+		}, nil
+	}
+
+	tokens := entry.limiter.TokensAt(now)
+	return Result{
+		Allowed:    true,
+		Limit:      burst,
+		Remaining:  clampTokens(tokens),
+		ResetAfter: resetDuration(rps, burst, tokens),
+	}, nil
+}
+
+func clampTokens(tokens float64) int {
+	if tokens <= 0 {
+		return 0
+	}
+	return int(math.Floor(tokens))
+}
+
+func resetDuration(rps float64, burst int, tokens float64) time.Duration {
+	if rps <= 0 {
+		return 0
+	}
+	deficit := float64(burst) - tokens
+	if deficit <= 0 {
+		return 0
+	}
+	return time.Duration(deficit / rps * float64(time.Second))
 }

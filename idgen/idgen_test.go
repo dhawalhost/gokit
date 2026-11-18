@@ -322,3 +322,81 @@ func TestShardIDGenerator_TableDriven(t *testing.T) {
 		t.Run(tc.name, tc.run)
 	}
 }
+
+func TestShardIDGenerator_BackwardDriftAndBase62Obfuscation(t *testing.T) {
+	t.Run("small backward drift within WithMaxBackwardDrift waits and succeeds", func(t *testing.T) {
+		gen, err := idgen.NewShardIDGenerator(7, idgen.WithMaxBackwardDrift(50*time.Millisecond))
+		if err != nil {
+			t.Fatalf("NewShardIDGenerator: %v", err)
+		}
+		// Simulate 10ms clock skew backward (lastTime 10ms ahead of now).
+		gen.SetLastTimeForTest(time.Now().UnixMilli() + 10)
+		id, err := gen.NextID()
+		if err != nil {
+			t.Fatalf("expected small drift recovery, got error: %v", err)
+		}
+		if idgen.ExtractShardID(id) != 7 {
+			t.Fatalf("expected shard 7, got %d", idgen.ExtractShardID(id))
+		}
+	})
+
+	t.Run("large backward drift exceeding WithMaxBackwardDrift fails", func(t *testing.T) {
+		gen, err := idgen.NewShardIDGenerator(7, idgen.WithMaxBackwardDrift(5*time.Millisecond))
+		if err != nil {
+			t.Fatalf("NewShardIDGenerator: %v", err)
+		}
+		gen.SetLastTimeForTest(time.Now().UnixMilli() + 5000)
+		if _, err := gen.NextID(); err == nil {
+			t.Fatal("expected error for large backward drift")
+		}
+	})
+
+	t.Run("Base62 encode/decode and Feistel ObfuscateID are bijective", func(t *testing.T) {
+		const secret uint64 = 0xfeedfacecafebeef
+		gen, err := idgen.NewShardIDGenerator(42)
+		if err != nil {
+			t.Fatalf("NewShardIDGenerator: %v", err)
+		}
+		shardID, err := gen.NextID()
+		if err != nil {
+			t.Fatalf("NextID: %v", err)
+		}
+
+		samples := []int64{0, 1, 2, 3, 61, 62, 123456789, shardID, (1 << 62) + 987654321}
+		seenCodes := make(map[string]struct{}, len(samples))
+		for _, id := range samples {
+			encoded := idgen.EncodeBase62(id)
+			decoded, decErr := idgen.DecodeBase62(encoded)
+			if decErr != nil || decoded != id {
+				t.Fatalf("Base62 roundtrip mismatch for %d: code=%q decoded=%d err=%v", id, encoded, decoded, decErr)
+			}
+
+			obf := idgen.ObfuscateID(id, secret)
+			if _, dup := seenCodes[obf]; dup {
+				t.Fatalf("duplicate obfuscated code %q for %d", obf, id)
+			}
+			seenCodes[obf] = struct{}{}
+
+			restored, revErr := idgen.DeobfuscateID(obf, secret)
+			if revErr != nil || restored != id {
+				t.Fatalf("Feistel roundtrip mismatch for %d: code=%q restored=%d err=%v", id, obf, restored, revErr)
+			}
+		}
+
+		if strings.HasPrefix(idgen.ObfuscateID(2, secret), idgen.ObfuscateID(1, secret)[:4]) {
+			t.Log("note: prefix collision in test check")
+		}
+		if idgen.ObfuscateID(1, secret) == idgen.EncodeBase62(1) {
+			t.Fatal("expected ObfuscateID(1) to differ from raw Base62(1)")
+		}
+		if _, err := idgen.DecodeBase62(""); err == nil {
+			t.Fatal("expected error on empty Base62 string")
+		}
+		if _, err := idgen.DecodeBase62("bad!"); err == nil {
+			t.Fatal("expected error on invalid Base62 character")
+		}
+		if _, err := idgen.DecodeBase62("zzzzzzzzzzz"); err == nil {
+			t.Fatal("expected overflow error on max-exceeding Base62 string")
+		}
+	})
+}

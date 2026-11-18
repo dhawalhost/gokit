@@ -614,16 +614,17 @@ import (
 
 type BankAccount struct {
     eventstore.BaseAggregate
-    Balance float64
+    // Always store money in integer minor units (e.g. cents for USD, yen for JPY, fils for BHD), never float64.
+    BalanceCents int64
 }
 
 func (a *BankAccount) AggregateType() string { return "BankAccount" }
 
 func (a *BankAccount) ApplyChange(evt eventstore.Event) {
     if evt.Type == "MoneyDeposited" {
-        var d struct{ Amount float64 }
+        var d struct{ AmountCents int64 }
         _ = evt.UnmarshalData(&d)
-        a.Balance += d.Amount
+        a.BalanceCents += d.AmountCents
     }
 }
 
@@ -641,7 +642,7 @@ func ExecuteFinancialLedger(ctx context.Context) error {
     // Append-only events preserve complete auditability with optimistic concurrency
     acc := &BankAccount{}
     acc.SetID("acc-us-east-901")
-    evt, _ := eventstore.NewEvent(acc.AggregateID(), "MoneyDeposited", map[string]float64{"amount": 1000})
+    evt, _ := eventstore.NewEvent(acc.AggregateID(), "MoneyDeposited", map[string]int64{"amount_cents": 100000})
     acc.TrackChange(acc, evt)
     if err := repo.Save(ctx, acc); err != nil {
         return err
@@ -652,7 +653,7 @@ func ExecuteFinancialLedger(ctx context.Context) error {
     if err != nil {
         return err
     }
-    fmt.Printf("Rehydrated balance: %.2f (Version: %d)\n", loaded.Balance, loaded.Version())
+    fmt.Printf("Rehydrated balance: %d cents (Version: %d)\n", loaded.BalanceCents, loaded.Version())
     return nil
 }
 ```
@@ -1702,6 +1703,256 @@ High-volume event processing, data ingestion, and asynchronous analytics pipelin
 - **Worker Panic Recovery:** All worker pools and stage transformation functions run under deferred `recover()` guards, intercepting panics and converting them into typed `ErrStagePanicked` errors.
 - **Dead-Letter Routing:** Rather than halting mission-critical pipelines upon encountering a malformed or poisoned record, stages route failed items, failure timestamps, and root-cause errors directly to a `DeadLetterSink` (`MemoryDeadLetterQueue` or custom stream sink), allowing healthy records to proceed uninterrupted.
 - **Operational Metrics:** Live telemetry (`p.Stats()`) tracks `ItemsIn`, `ItemsOut`, `Errors`, `DeadLettered`, and cumulative latency per stage for real-time Prometheus / Grafana observability.
+
+---
+
+## 🚦 Rate Limiting vs. Admission Control Under Overload
+
+Rate limiting and admission control solve fundamentally different failure modes:
+- **Rate Limiting (Policy)**: Enforces commercial quotas and multi-tenant fairness (e.g. `1k RPS` per tenant).
+- **Admission Control (Physics)**: Protects finite server resources using **Little's Law** ($L = \lambda \cdot W$). At `2,000 RPS` and `50ms` latency, `100` requests are in flight. If downstream latency jumps to `500ms` while every tenant remains under RPS quota, in-flight concurrency explodes to `1,000` — exhausting worker threads and DB pools without any rate limiter firing.
+
+### 1. Algorithm & State-Size Trade-offs (`1M RPS`, `10M` keys)
+| Algorithm | Per-Key Redis Footprint | Burst Accuracy | Best Used For |
+| :--- | :--- | :--- | :--- |
+| **Fixed Window** | 1 integer (`O(1)`) | Permits `2×` burst across window boundary | Coarse telemetry; avoid for strict API quotas |
+| **Sliding Window Log** | ZSET of timestamps (`O(limit)`) | Exact | Rule out above low RPM (`10M keys * 100 entries =` tens of GB) |
+| **Sliding Window Counter** | 2 counters (`prev * overlap% + curr`) | Within a few percent (even traffic) | `"Per-minute"` quota APIs (`O(1)`) |
+| **Token Bucket** | `tokens + last_refill_ts` (`~16 B`) | Controlled burst `B` | In-process/gateway local buckets ([`ratelimit.InMemoryStore`](ratelimit/ratelimit.go)) |
+| **GCRA** | Single `TAT` timestamp (`~100 B` w/ Redis overhead) | Exact token-bucket equivalence | Distributed Redis (`~1 GB` for `10M` keys, single atomic Lua op via `TIME`, [`ratelimit.RedisStore`](ratelimit/redis.go)) |
+
+### 2. Distributed Scaling, Local Fallbacks & Overload Queueing
+- **Shard Ceilings & Hot Tenants**: One Redis shard executes `~100k` Lua ops/s (`0.3–1ms` same-AZ RTT). Serving `2M RPS` requires key sharding across `>=20` shards. Single whale tenants (e.g. `20%` of global traffic) cannot be spread across shards — lease batches of tokens (`e.g. 100`) locally at gateways, trading a bounded overshoot of $\text{nodes} \times \text{per-node admit rate} \times \text{sync interval}$ to remove Redis round trips from the hot path.
+- **Multi-Region Quotas**: Split global quota `L` across regions dynamically by recent traffic share (`1–5s` async sync; worst-case overshoot $\approx (N - 1) \times r \times T$). Never pay a `60–150ms` cross-region RTT on the hot request path.
+- **Weighted Costs & Degradation Contract**:
+  - Use [`ratelimit.DetailedStore`](ratelimit/ratelimit.go) (`AllowN`) and [`middleware.RateLimit`](middleware/ratelimit.go) with `CostFunc` for expensive operations (`search=5`, `write=1`) while emitting `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After`.
+  - When Redis fails (`FailOpen`): bind `FallbackStore` + `FallbackNodeCount` to cap each gateway at `limit / nodes` rather than admitting unbounded traffic. Reserve `FailClosed: true` (`503`) for login, OTP, and payment endpoints, with a strict `2–5ms` Redis timeout.
+- **Admission Control, CoDel & Client Throttling**:
+  - Pair API quotas with Vegas/gradient adaptive concurrency in [`loadshed.Limiter`](loadshed/limiter.go) (`PriorityLow`, `PriorityStandard`, `PriorityCritical`).
+  - Bound queues by time (**CoDel**: drop when queue delay exceeds `5–10ms`) and switch to **LIFO** under sustained overload (`bulkhead.MaxQueueWait`) because the oldest requests have likely already timed out at the caller.
+  - On the client side, enforce Google SRE adaptive throttling ($p_{\text{reject}} = \max(0, \frac{\text{requests} - K \cdot \text{accepts}}{\text{requests} + 1})$, $K \approx 2$) and retry budgets ([`client.RetryBudget`](client/retry.go)).
+
+---
+
+## 🛡️ Cascading Failure Prevention: Circuit Breakers, Bulkheads & Shuffle Sharding
+
+### 1. Why a Slow Dependency Is Worse Than a Dead One
+A dependency returning immediate connection-refused errors frees caller threads in `<1ms`. A slow dependency holding connections until a `2s` timeout at `2,000 RPS` creates $2{,}000 \times 2\text{s} = 4{,}000$ in-flight requests — filling a `200`-slot worker or DB pool in **`100ms`** and cascading into unrelated endpoints on the same server.
+
+### 2. Defense Layers (`circuitbreaker`, `bulkhead`, `client`, `loadshed`)
+- **Circuit Breakers & Fallback Hygiene**:
+  - Track rolling `FailureRatio` + `MinRequests`, enforce per-attempt `ExecutionTimeout` (`ExecuteCtx`), jitter `ResetTimeoutJitter` on `StateOpen` so replicas do not stampede half-open probes simultaneously, and count degraded latencies via `SlowCallThreshold` ([`circuitbreaker`](circuitbreaker/circuitbreaker.go)).
+  - **The Fallback Trap**: A fallback must be *strictly cheaper* than the primary path (stale L1 cache, static default, or omitting non-critical widgets like recommendations). Never fall back from an overloaded Redis cache straight to an unsized SQL database.
+  - For fleet backends, prefer per-host outlier ejection (e.g. `5` consecutive `5xx`, capped at `10–50%` of the fleet) over tripping a global service breaker on a single poisoned host.
+- **Bulkheads, Cells & Shuffle Sharding**:
+  - Size per-dependency semaphores via Little's Law: $\text{cap} = \lambda \times W_{\text{p99}} + \text{headroom}$ (e.g., `500 RPS * 80ms = 40 -> cap 60`) using [`bulkhead.PartitionedBulkhead`](bulkhead/bulkhead.go) with bounded `MaxQueue` and `MaxQueueWait`.
+  - Isolate blast radius with cell-based architectures (`1/N` impact) or **shuffle sharding** (`8` hosts per tenant out of `100` yields $\binom{100}{8} \approx 1.9 \times 10^{11}$ unique virtual cells, making multi-tenant collateral damage negligible).
+- **Retry Amplification & Deadline Propagation**:
+  - Unbounded retries across `4` synchronous hops with `4` attempts each amplify load by $4^4 = 256\times$. Retry at **one layer only**, enforce full jitter + `Retry-After` respect, and cap aggregate retries with [`client.RetryBudget`](client/retry.go) (`<=10%` retry ratio).
+  - Propagate remaining request deadlines (`context.WithDeadline`) across every RPC; abort work immediately if remaining budget `<` expected service time.
+
+---
+
+## 📈 Observability That Proves SLOs, The 5-Step p99 Triage Tree & TSDB Cardinality
+
+### 1. RED vs. USE, Error Budgets & Multi-Window Burn Alerts
+- **RED (Request Path)** — *Rate, Errors, Duration*: Tracked automatically on isolated Prometheus registries via [`observability.HTTPMetrics`](observability/middleware.go) and gRPC interceptors. Always slice SLIs per region/AZ so global averages cannot hide a degraded AZ.
+- **USE (Resource Path)** — *Utilization, Saturation, Errors*: Track CPU, disk queue depth, and connection/worker pool saturation. Pools at `90%+` saturation warn of an imminent latency cliff *before* request p99 visibly explodes.
+- **Error Budget Math**: A `99.9%` monthly SLO equals `~43.2 min` of downtime budget. A single `5`-minute full outage burns `~12%`, while a slow `2%` error burn over `4` hours consumes the same budget — requiring **multi-window burn-rate alerts** (`5m/1h` fast burn page + `30m/6h` slow burn) rather than static thresholds.
+- **The 99% Cache-Hit Tail Law**: With a `99%` cache hit rate, `100%` of origin database traffic and tail `p99` latency are governed by the `1%` miss path.
+
+### 2. The 5-Step p99 Incident Hypothesis Tree (5-Minute Triage)
+When p99 spikes while error rates remain flat, falsify hypotheses in order:
+1. **Scope**: Global vs. single region/AZ vs. single route or tenant (`tenant` / `route` slices)?
+2. **Shape**: Bimodal failure (subset of requests hitting a `2.4s` timeout) vs. uniform shift across all requests?
+3. **Saturation (USE)**: Queue depth, DB/Redis connection pool waiting, CPU throttling, or `>70%` queueing knee?
+4. **Amplification**: Retry storms, cold-cache stampedes, or synchronous fan-out tail amplification ($\text{Tail} = 1 - (1 - p)^N$, e.g. $20$ parallel calls inherit $\max$-of-$20$)?
+5. **Skew / Locks**: Hot shard/key (e.g. a single Redis slot stalling behind an $O(N)$ Lua script) or Go GC / lock contention (verified via [`x/diagnostics`](x/diagnostics/README.md))?
+
+### 3. Time-Series Ingestion & Cardinality Explosion Control
+- **The Explosion Math**: `1 metric * 10 endpoints * 5 methods * 50 pods * 4 statuses = 10k` series. Adding one unbounded label (`user_id` with `1M` values) yields `10B` theoretical series, and `10`-bucket Prometheus histograms multiply active series by `10×+`. `1B` active series at `10s` scrape interval (`100M samples/s`) compresses via Gorilla delta-of-delta + XOR to `~1.37 B/sample` (`~137 MB/s ≈ 12 TB/day`), but **label index RAM per active series** is what exhausts the fleet.
+- **Guardrails**:
+  - Normalize HTTP paths to route templates (`/users/{id}` via Chi `routePattern` in `observability`). Keep high-cardinality IDs (`user_id`, `tenant`, `shard`) on **traces and structured logs**, never Prometheus metric labels.
+  - Enforce a **write-gate cardinality governor** per tenant that rejects *new* series above quota while keeping existing series flowing, downsample retention (`15d raw -> 3m 1m -> 13m 1h`), isolate alert-evaluator query pools from interactive dashboards, and configure missing-data alerts (**silence must alert as `NoData`, never `"OK"`**).
+
+---
+
+## 🔢 Distributed Unique IDs Under Clock Skew & Lease Fencing
+
+Every 64-bit distributed ID generator trades off three constraints: **coordination-free uniqueness**, **time ordering**, and **compact 64-bit size**.
+
+| Scheme | Bit Layout / Size | Pros | Production Costs & Pitfalls |
+| :--- | :--- | :--- | :--- |
+| **Snowflake** | `1` sign + `41` ms + `10` worker + `12` seq (`64`-bit) | Compact `BIGINT` ($2\times$ smaller B-tree index RAM than UUIDv4); `4,096/ms/worker` | Needs worker-ID leases & monotonic clock discipline; **not** strict total order across workers |
+| **Instagram Shard ID** ([`idgen.ShardIDGenerator`](idgen/shard.go)) | `41` ms + `13` shard (`0..8191`) + `10` seq (`64`-bit) | Zero coordinator; routes directly to logical DB shard in $O(1)$ (`ExtractShardID`) | Bound per logical shard; share same clock-skew rules |
+| **UUIDv7 / ULID** ([`idgen.NewUUIDv7`](idgen/idgen.go)) | `48`-bit ms + random (`128`-bit) | Coordination-free + monotonic B-tree append locality | Twice the index RAM of `64`-bit IDs |
+| **UUIDv4** | `122` random bits (`128`-bit) | Zero coordination | Random inserts fragment clustered B-trees & thrash buffer pools |
+| **DB Segment Blocks** | Sharded sequence ranges (`1k–10k` blocks) | 1 DB write per block, double-buffered in RAM | Leaves ID gaps on crash; monotonic per allocator |
+
+### Clock Skew, Worker Fencing & External Encoding Rules
+1. **Backward Clock Jumps**: Run `chrony` in slew-only mode after boot. In [`idgen.NewShardIDGenerator`](idgen/shard.go), configure `WithMaxBackwardDrift` (`e.g. <=5ms`) to spin-wait tiny jitter while refusing and alarming on larger NTP jumps (`>50–100ms`); persist high-water marks where restarts could regress.
+2. **Worker-ID Leases & GC Pauses**: A pod paused in STW GC beyond its etcd/ZooKeeper lease TTL can wake up and overlap a new holder unless it stops issuing locally before `TTL - safety_margin` and new holders wait `>= max_clock_skew` before emitting IDs ([`distlock.FencedLock`](distlock/README.md)). In autoscaled Kubernetes clusters (`3,000+` pods), reserve region bits + lease worker IDs dynamically rather than hashing IPs/hostnames into `10` bits.
+3. **Avoid Range Hotspots & Enumeration**: Monotonic IDs hot-spot the final range tablet in Spanner/Bigtable/HBase (use shard prefixes or bit-reversed sequences). Always serialize `64`-bit IDs as JSON strings (`id_str`) for JavaScript clients (exact integers cap at $2^{53}$), and wrap external URLs/order IDs with reversible **63-bit Feistel + Base62 obfuscation** ([`idgen.ObfuscateID`](idgen/base62.go) / `DeobfuscateID`) to defeat German-tank volume enumeration.
+
+---
+
+## 🔐 Security Architecture at Scale: Token Revocation, Zanzibar ReBAC Zookies & Crypto-Shredding
+
+### 1. Authn: Stateless Verification + Bounded Revocation Triad
+- Verifying ES256/RS256 JWTs locally via [`middleware.JWT`](middleware/auth.go) and cached JWKS ([`middleware.NewJWKSKeyFunc`](middleware/jwks.go)) costs `~50–200 µs` with zero network hops, whereas Redis session lookups (`0.5–1ms`) permit instant termination.
+- Bridge stateless JWT performance with instant revocation using three controls:
+  1. Short-lived access tokens (`5–15 min`).
+  2. **Refresh-token rotation with reuse detection**: any replay of an already-rotated refresh token invalidates the entire token family.
+  3. Bounded **`jti` revocation denylist** pushed to gateways (entries expire naturally after the `5–15m` access TTL).
+- For service-to-service traffic, enforce mTLS with short-lived (`~24h`) SPIFFE workload identities.
+
+### 2. Authz: Preventing IDOR & The Zanzibar "New-Enemy" Leak
+- Derive `tenant_id` exclusively from verified auth tokens and enforce defense-in-depth at SQL execution via Postgres transaction-scoped RLS (`set_config(..., true)` in [`multitenancy.SetRLS`](multitenancy/database.go)) so IDOR bugs cannot expose another tenant's rows.
+- When coarse RBAC breaks down on fine-grained sharing (`"can user X view doc Y?"`), use **ReBAC** (Google Zanzibar relation tuples evaluated at `<10ms` p95).
+- **The New-Enemy Problem**: Revoking a user from a document followed immediately by adding confidential edits can leak the new content if the permission check reads a stale ACL cache. Stamp each content mutation with an ACL consistency token (**zookie**) and require reads to evaluate permissions at `acl_snapshot >= content_zookie`, paired with Watch-API invalidation on ACL removals.
+
+### 3. Tenancy Tiers, KMS Crypto-Shredding & Abuse Rate Limiting
+- **Hybrid Tenancy Spectrum**: Shared tables + RLS for long-tail SMB tenants, schema/DB-per-tenant for mid-market compliance, and isolated cells (`2–10×` cost) + per-tenant [`bulkhead.PartitionedBulkhead`](bulkhead/bulkhead.go) for noisy whale/regulated enterprises.
+- **Envelope Encryption & Crypto-Shredding**: Wrap each tenant's DEK under a KMS KEK ([`crypto/kms.Envelope`](crypto/kms/envelope.go)); destroying a tenant's key cryptographically shreds all cold backups cleanly.
+- **Abuse & Credential Stuffing**: Enforce rate limits per **account AND per IP/ASN** (using `TrustedProxies` right-to-left XFF parsing in `middleware.RateLimit`), return constant-time uniform responses for unknown users vs. bad passwords, check leaked-credential HIBP sets via k-anonymity, fail open onto local `FallbackStore` (`limit / nodes`) for general APIs, and fail closed (`503`) on auth/payment endpoints.
+
+---
+
+## 💳 Payments, Double-Entry Ledgers, 3-Way Reconciliation & Flash-Sale Inventory Sagas
+
+### 1. Duplicate Rates & The Kafka EOS Boundary
+At `50,000 msg/s` with a `0.1%` timeout/retry rate, normal traffic generates **`~50` duplicate deliveries/sec** (including producer ack-losses creating two offsets with identical intent). Kafka EOS (`enable.idempotence` + transactions) only covers a **closed consume-transform-produce pipeline inside one cluster** — external side effects still require consumer idempotency or transactional outbox/inbox tables:
+
+| Workload | Key Shape | Storage & Semantics | Strict Once-Only? |
+| :--- | :--- | :--- | :--- |
+| **Card Charge** | `tenant:order:<id>:charge:v1` | Relational ledger DB (`INSERT ... ON CONFLICT`) + pass same key to PSP | **Yes** — financial correctness mandatory |
+| **Push Notification** | `push:<user>:<tpl>:<window>` | Redis `SET NX PX` (1–24h TTL) | **Best-effort** — duplicate hurts UX, not accounting |
+| **View Counter** | Window/batch ID | Commutative increments ([`cache.ShardedCounter`](cache/counter.go)) | **No** — pair at-least-once with commutative merge |
+
+### 2. Payment Intent State Machine & `int64` Double-Entry Ledgers
+- **End-to-End Idempotency**: Insert `payment_intent(key, request_hash, state=CREATED)` *before* calling the PSP (`1–3s` p99, `10–30s` timeout). Enforce payload-hash equality (`422` on mismatch via [`idempotency.Middleware`](idempotency/idempotency.go)) and forward your internal `intent_id` as the PSP's idempotency key. Retain records `>=24h` (longer in ledger storage).
+- **Never Map Timeouts to `FAILED`**: Move timed-out calls into **`PENDING_UNKNOWN`** and resolve asynchronously via PSP polling or deduplicated webhooks using ranked forward-only transitions (`WHERE state_rank < new_rank`).
+- **Double-Entry Ledger (`int64` Minor Units)**: Store money exclusively as `int64` minor units (`JPY=0`, `USD=2`, `BHD=3` — never floats). Every financial event writes immutable zero-sum rows (e.g. `debit customer_receivable 10000`, `credit merchant_payable 9700`, `credit fee_revenue 300`). Corrections append reversing entries; partial refunds serialize against refundable balance.
+- **3-Way Reconciliation**: Expect `0.01–0.1%` drift (late webhooks, partial captures, FX rounding, chargebacks). Reconcile daily across `(1)` internal zero-sum invariants, `(2)` T+1 PSP settlement files, and `(3)` bank statements, routing exceptions to owned aging SLAs.
+
+### 3. Flash-Sale Inventory Reservations & Compensating Sagas
+- Reserve at **checkout start** with a `10–15m` TTL extended via heartbeat during 3DS redirects (avoiding `30%` phantom OOS at add-to-cart). Commit asynchronously via [`x/saga`](x/saga/saga.go) checkpoints + Outbox — never cross-service 2PC.
+- **Hot-Row Mitigation (`200k attempts/s` vs. `1–5k/s` Postgres row lock)**: layer waiting-room tokens $\to$ sharded SQL buckets (`100` buckets of `100`) $\to$ atomic Redis Lua decrement ([`cache.AtomicDecrementWithFloor`](cache/counter.go)) backed by safety-buffer holds or AOF `fsync=always`. For multi-region inventory, bind SKU-warehouse pairs to a home region or pre-allocate regional quota escrow.
+
+---
+
+## 🗄️ Dynamo-Style KV Internals, Multi-Region Active-Active Escrow & Disaster Recovery
+
+### 1. Quorums, Anti-Entropy & LSM Fleet Sizing
+- **$W + R > N$ Is Not Linearizable**: Sloppy quorums / hinted handoff, concurrent writes, and `10–100ms` clock skew under LWW+HLC can still drop updates or diverge. True CAS / linearizable invariants require version vectors + sibling merge, CRDTs (`G/PN-Counter`, `OR-Set`), or per-key Raft/Paxos / LWT (`~4` RTTs in Cassandra).
+- **Anti-Entropy & Zombie Deletes**: Pair read repair (hot keys) with background **Merkle-tree diffs** (cold keys). Ensure `gc_grace_seconds` (`~10 days`) exceeds maximum node downtime so tombstones aren't swept before stale replicas sync — otherwise deleted items resurrect.
+- **Storage Engine Trade-Offs & Bandwidth Sizing**: Leveled compaction (`10–30×` WA, `1.1×` SA, `20%` disk headroom) suits reads; size-tiered (`4–10×` WA, `2×` SA, `50%` headroom) suits writes; Bloom filters (`10 bits/key ≈ 1%` FPR) bound SSTable checks; WiscKey/BlobDB separates large values. At `1M writes/s * 1KB * N=3 = 3 GB/s` raw $\times 15\text{ WA} = 45\text{ GB/s}$ sustained device writes, compaction bandwidth (`>= 45` NVMe nodes) drives cluster size before reads.
+
+### 2. Multi-Region Active-Active Conflict Classification
+- Classify entities by invariant, not database: *commutative* counters/sets use CRDTs (merged via additive union, never averaged); *invariant* entities (money, inventory, unique handles) use **Home-Region Write Affinity**, consensus (`TrueTime` $2\epsilon \approx 10\text{–}15\text{ms}$), or **Regional Escrow** (e.g. `4k / 3k / 3k` regional flash-sale slices + `5%` global tail pool, reclaiming frozen dead-region leases on expiry).
+- Conflict frequency equals $\text{write\_rate/key} \times \text{async replication lag}$ (`0.5–2s` normal p99). Partition heal protocol: Merkle diff $\to$ deterministic per-entity merge $\to$ invariant conflict DLQ + compensation workflow.
+
+### 3. Disaster Recovery (RPO / RTO) Tiers & Failure Physics
+| Tier | RPO | RTO | Mechanism | Cost vs. Single Region |
+| :--- | :--- | :--- | :--- | :--- |
+| **Backup & Restore** | Hours–24h | Hours–days | Cross-region snapshots + WAL/binlog (`50–200 GB/hr` restore) | `~1.1×` |
+| **Pilot Light** | Minutes | `30–60m` | Live async DB replica; IaC scales stateless compute on demand | `~1.2–1.4×` |
+| **Warm Standby** | Seconds | `5–15m` | Scaled-down full stack switched via DNS/GLB | `~1.5–1.8×` |
+| **Active-Active (Hot)** | `~0` (sync) / sec (async) | `<1m` | Cross-region quorum or regional escrow/conflict resolution | `~2–2.5×+` |
+
+- **Hidden RTO Bottlenecks & Correlated Risks**: p99 async replication lag is your true RPO. Most RTO goes to failure detection (`1–3m`), human decision (`5–20m`), and DNS/JVM cache TTLs (`1–5m+`). Prevent split-brain with storage-epoch fencing / STONITH ([`distlock.FencedLock`](distlock/README.md)), maintain a **failback quarantine table** for unreplicated commits, protect against logical corruption with PITR + `1h` delayed replicas, and replicate **KMS keys/IAM/CI** so backups aren't locked inside a dead region.
+
+---
+
+## ⏰ Distributed Job Scheduler: Time-Bucketed Due Index, Timing Wheels & Catch-Up Policies
+
+To run `50M` scheduled jobs (`~50 GB` metadata) firing `1M/min` (`~17k/s` avg with severe `:00` spikes) under `<2s` p99 fire latency:
+1. **Partitioned Due-Index + Timing Wheel**: Partition the time-bucketed index (`due_minute -> job_ids`) by `hash(job_id) % N` (never `tenant_id` so large tenants spread cleanly). Scheduler workers lease partitions via fenced tokens ([`distlock.FencedLock`](distlock/README.md)), preload `now..now+60s` into an **in-memory timing wheel**, and push due runs into per-tenant-tier Kafka/SQS executor queues (`fire_lag` vs. `start_lag` measured separately).
+2. **Thundering Herd at `:00`**: Inject deterministic per-tenant jitter windows, preload upcoming buckets `30–60s` early, and enforce per-tenant enqueue token buckets.
+3. **End-to-End Idempotency & Catch-Up Policy**: Guard execution with `INSERT run(job_id, scheduled_ts, fencing_token) ON CONFLICT DO NOTHING` and forward `(job_id, scheduled_ts)` to external targets (cron next-fire updates commit in the same DB transaction). Define explicit per-job outage catch-up policies (`fire_all` / `fire_latest` / `skip`). Admit transparently that a `10s` AZ lease failover exceeds a `2s` p99 fire budget unless hot standby owners run. (See [`scheduler`](scheduler/scheduler.go) and [`jobqueue`](jobqueue/redis.go) for single-cluster primitives.)
+
+---
+
+## 🔗 URL Shortener & Pastebin: Base62 Keyspaces, Blob-vs-Metadata Plane & Edge Denylists
+
+1. **Keyspace & Anti-Enumeration**: `7` Base62 chars cover $62^7 \approx 3.5 \times 10^{12}$ codes (`~35+` years at `3k creates/s`). For URL shorteners, pre-allocated ID ranges ([`idgen.ShardIDGenerator`](idgen/shard.go)) scrambled via bijective Feistel Base62 ([`idgen.ObfuscateID`](idgen/base62.go)) eliminate hash-and-truncate collisions and sequential enumeration; keep random-allocation utilization `<50%` and apply days-to-weeks cool-down before reclaiming expired codes.
+2. **Redirect & Blob/Metadata Split**: Separate latency-critical `~300 B` KV metadata (`302` redirect or paste visibility/expiry; never cache mutating `301`s forever) from async click analytics / S3 blob storage (`10M` pastes/day $\approx 100\text{ GB/day}$). Always upload **blob first, metadata second** ([`storage/s3`](storage/s3/s3.go)) so crashes leave sweepable 24h orphan blobs rather than broken links.
+3. **Viral Spikes, Lazy Expiry & `<5s` Global Takedowns**: Serve immutable blobs with `Cache-Control: immutable` paired with short-TTL (`30–60s`) edge-cached metadata + singleflight ([`cache.Coalescer`](cache/singleflight.go)). Enforce logical expiry inline (`expires_at -> 404`) plus jittered TWCS physical deletes to avoid tombstone storms. Guarantee `<5s` privacy/abuse takedowns without sacrificing CDN hit rate via an **edge pub/sub global denylist** checked before serving cached URLs.
+
+---
+
+## 📰 Social News Feed: Hybrid Fan-Out, 3-Stage Ranking Cascade & Timeline Storage
+
+At `300–500M DAU` (`60k` avg / `150k` peak read QPS, `15–20k/s` peak writes, `<200ms` server p99):
+1. **Hybrid Fan-Out**: Push (`fan-out on write`) for normal authors into `500–800`-entry Redis inboxes (`16–24 B` ID + ranking hints only — **never** post bodies, keeping active-30d inbox RAM at `2–5.8 TB`); skip inactive users and rebuild on return. Pull (`fan-out on read`) for celebrities above `10k–100k` followers (`300B` daily fan-out writes avoided) and merge at read time.
+2. **3-Stage Server Pipeline (`<200ms` p99)**:
+   - *Retrieval (`20–30ms`)*: pull `500–1,500` IDs from pushed inbox + celebrity hot caches + ads/recs.
+   - *Ranking (`80–120ms`)*: light heuristic cuts to `~200`, feature fetch (`30–40ms` with per-feature timeout defaults), heavy GBDT/neural ranker (`50–80ms`), then policy rerank (diversity, dedupe, ad slots). **Degrade gracefully to chronological sort** if ranking times out.
+   - *Hydration (`20–30ms`)*: batched multi-get ([`batcher.DataLoader`](batcher/README.md)) filtered on read for deletes/tombstones, blocks, and privacy.
+3. **Cache Failures & Pagination Trap**: Ranked offsets duplicate/skip items on live streams — use **session-snapshot cursors** (`(score, post_id)`, `10–30m` TTL) + per-user impression Bloom filters ([`x/bloomfilter`](x/bloomfilter/bloomfilter.go)), merge user's own recent posts for read-your-writes, rate-limit/coalesce cold inbox rebuilds if `20%` of Redis shards fail, and cap `80M`-follower celebrity delete visibility by `max(page-cache TTL, CDN TTL)`.
+
+---
+
+## 💬 Real-Time Messaging: 1:1 Chat, Hybrid Large Group Rooms & Priority Notification Pipelines
+
+1. **Three Messaging Planes (`500M DAU`, `20B msgs/day`, `200–500M` Conns)**: Separate stateless edge **Connection Gateways** (WebSocket/MQTT, `0.5–1M` conns/box across `400–500+` hosts, jittered reconnect backoff) from the durable **Message Store** (partitioned by `conv_id, seq`) and lossy TTL **Presence Plane** (`~11M pings/s`, push only to open chats with `30s` disconnect debounce).
+2. **Per-Conversation Ordering & Multi-Device Cursor Sync**: Single fenced partition owner assigns monotonic `seq`; clients dedupe on `(sender, client_msg_id)`, detect gaps (`41 -> 43 => fetch 42`), and sync via **per-device cursors** (including `30d` offline paged sync), while receipts (`2–3×` message volume) coalesce into `read_up_to_seq` watermarks.
+3. **Hybrid Group Chat & Large-Room Unreads**: Push to member inboxes for small groups ($N \le 500$); switch via per-group flag to pull + **gateway-scoped pub/sub** (`1` publish across `~2k` gateways instead of `1M` fan-out writes) for channels. Compute `unread = group.latest_seq - user.last_read_seq` ($O(1)$ per read, zero writes per message) + separate mention counter, enforce `seq`-versioned membership checks, and append deletes/edits as tombstones referencing `target_seq`.
+4. **Priority-Isolated Notification Pipeline (`1B/day`, `1M/s` Bursts)**: Route `Ingest -> Kafka -> Decision Service (prefs, quiet hours, (user, type) digests)` into **strictly isolated topics, worker pools, and provider quotas** per priority (`P0 < 2–5s` OTP vs. `P1 < 30s` social vs. `P2` timezone-paced marketing). Evaluate preferences at send time, prune `10–20%` stale APNs/FCM tokens, and dedupe via `(notif_id, channel, device)` + provider `collapse_key` ([`x/notify`](x/notify/notifier.go)).
+
+---
+
+## 🔎 Search Shards (WAND & HNSW-RRF), Typeahead (FST vs. Edge N-Gram), Mercator Crawler & Ad-Click Sketching
+
+- **Distributed Search (`10B` Docs, `200ms` Budget)**: Use **document-partitioned shards** (`~25 TB` varint/PForDelta index across `400` shards $\times 3$ replicas $= 1,200$ nodes — replicas absorb QPS while shards split RAM) with `~1s` immutable segments, hedged requests after shard p95, and a `Stage 0` BM25 + Block-Max WAND `<10ms` $\to$ `Stage 1` GBDT $\to$ `Stage 2` cross-encoder cascade alongside parallel **HNSW vector ANN** merged via Reciprocal Rank Fusion (RRF). Isolate `<60s` breaking news into a bounded real-time index tier.
+- **Typeahead (`70–300k QPS`, `<20ms` Server p99)**: Keep a separate **build path** precomputing `prefix -> top K` (`10–20 GB` RAM) rather than scanning tries at query time. Choose **Radix/FST** (`5–10×` smaller RAM) vs. **Edge N-Gram inverted index** ([`x/search`](x/search/analyzer.go)) for infix/typo/locale support. Shard by **prefix range** (never first-letter hash), cache `1–2` char prefixes at the edge, ship blue/green validated snapshots + streaming Kafka/Flink deltas (`<60s` trending breaking topics), and enforce per-user voting + serve-time blocklists.
+- **Mercator Web Crawler (`1,000 pages/s`, `10B` URLs)**: Split into $F$ priority front queues and $B \approx 3\times$ host-exclusive politeness back queues (`min-heap` by `now + crawl_delay`), partitioned by `hash(host)`. Pair a local caching DNS resolver, a `~12 GB` sharded URL Bloom filter (`9.6 b/URL` @ `1%` FPR), `64`-bit **SimHash** (`Hamming <= 3` for `~30%` near-dups), `robots.txt` `5xx -> disallow`, spider-trap depth/param caps, and Poisson $1/\lambda$ conditional GET recrawls (`304`).
+- **Ad-Click Aggregator (`100k–2M events/s`)**: Partition Kafka by salted `(campaign_id, salt)` into Flink (watermarks + late-event windows) + ClickHouse/Druid rollups + raw S3 archive. Separate **exact financially reconciled billing** (`7–30d` `click_id` dedupe + idempotent upserts) from real-time sketches (**HyperLogLog** `~12 KB`, `1%` error merged union-wise across regions; **Count-Min Sketch** heavy hitters).
+
+---
+
+## 🎬 Video Streaming (Multipart Upload, Spot Chunk DAG, ABR) & 3-Tier CDN Live/VOD Delivery
+
+1. **Three Video Subsystems (`1.4 PB/day` Ingest, `100–200 Tbps` Egress)**:
+   - **Upload**: Direct client-to-S3 resumable `8–16 MB` multipart uploads via `PresignPut` ([`storage/s3`](storage/s3/s3.go)) keyed by `session_id` $\to$ Kafka completion trigger.
+   - **Chunk-Idempotent DAG**: Sandboxed probe $\to$ `4–10s` GOP split $\to$ parallel `chunk × rendition × codec` spot workers idempotent on deterministic output keys `hash(source, chunk, rendition, encoder_version)` $\to$ immutable **versioned segment paths** `/v/{id}/{encode_ver}/720p/seg_0042.m4s` packaged in CMAF fMP4. Publish `360p/720p` H.264 within minutes; reserve `5–20×` costlier VP9/AV1 and per-title ladders for high-view videos.
+   - **Playback & `"301"` Counters**: Hybrid/BOLA ABR over `2–6s` segments; aggregate `1B+` daily views through windowed dedupe + bot filters before exact batch reconciliation.
+2. **3-Tier CDN, Cold Starts & Live vs. VOD**: Route **Edge PoP (intra-PoP consistent hashing + query/token stripping) $\to$ Regional Origin Shield $\to$ Origin**; improving edge hit rate from `95%` to `98%` cuts origin egress by `60%` (`45 PB -> 18 PB/day` at full scale). Collapse misses at every tier, publish **segments before manifests** (never negative-cache transient `404`s), pre-warm premieres/live holding slates, target `<1s` TTFF (TLS 1.3/QUIC, short first segment, manifest pre-embedding), and pick **HLS (`20–30s`) vs. LL-HLS (`2–5s`) vs. WebRTC SFUs (`<500ms`)** by product latency tolerance.
+
+---
+
+## 🚕 Geospatial Ride-Hailing (H3 Soft-State Index, CAS Dispatch, CRP ETA, Surge) & Multiplayer AOI Sync
+
+1. **Soft-State Location vs. Hard-State Dispatch (`250k–750k writes/s`)**: Keep the driver geospatial index (**Uber H3** res 8 `~0.74 km²` / res 9 `~0.1 km²`) purely in sharded memory updated only on cell-boundary crossings (`12s` / 3-ping stale TTL) — crashed shards rebuild from pings in `4–8s` without a WAL. Dispatch guarantees "one driver, one trip" via atomic **Compare-And-Set + `15s` lease TTL** (`AVAILABLE@v -> OFFERED@v+1 -> ON_TRIP`) paired transactionally/outbox with the durable trip state machine.
+2. **Two-Layer ETA (`<50ms` p99), Surge Loop & 3 Location Consistencies**:
+   - Combine **Contraction Hierarchies / Customizable Route Planning (CRP)** (`1–5ms`, `1m` edge-weight re-customization for live traffic/incidents) with batched 1-to-many **ML residual models** (`graph_eta * city_factor` fallback) cached by H3 res-9 cell pairs.
+   - Compute surge every `30–60s` in H3 res 7–8 cells (Kafka $\to$ Flink $\to$ Redis), smooth spatially (`k-ring`) and temporally (`EWMA + hysteresis`), and lock a **`2–5m` signed price quote** onto the ride intent.
+   - Enforce three separate location consistency models: ephemeral LWW matching index, HMM road-snapped/dead-reckoned UI glide (filtering urban-canyon GPS jumps), and offline map-matched durable Kafka traces for billing.
+3. **Multiplayer AOI Sync (`20–128 Hz`)**: Separate authoritative single-process/single-region match tick servers (`50ms` budget at `20 Hz`, zero-GC preallocated double buffers, selective UDP reliability vs. TCP head-of-line blocking) from global TTL/watched presence (`15–30s` flap debounce). Shrink `100`-player battle-royale egress (`128 -> 26 Mbps/match`) via Area-of-Interest filtering, `int16` quantization, delta compression, and distance frequency tiers (`20/10/2 Hz`), sending player **inputs** only with `100–200ms` interpolation buffers and `<=200ms` hitscan server hitbox rewind.
+
+---
+
+## 🧭 Senior System Design Playbook: 45-Min Pacing, Cost-Cut Ladder, 6 Follow-Up Templates & MVP Scoping
+
+### 1. 45-Minute Interview Time Budget & Essential Sizing Numbers
+- **Checklist**: `1. Scope & SLOs (4–5m)` $\to$ `2. Back-of-Envelope Sizing ending in "so this means..." (3m)` $\to$ `3. API & Data Model (5m)` $\to$ `4. High-Level Design (8m)` $\to$ `5. Two-Level Deep Dives (15–18m)` $\to$ `6. Failure Modes & Operations (5m)` $\to$ `7. Cost & v2 Evolution (2–3m)`.
+- **Rules of Thumb**: `1M req/day ≈ 12 QPS` (`100M/day ≈ 1.2k avg / 5k peak`); RAM `~100 ns`, NVMe random read `~100 µs`, same-AZ RTT `<1ms`, cross-region RTT `60–150ms`; single Redis shard `~100k+ ops/s`, Postgres primary `~10k+ writes/s`, Kafka partition `1–10 MB/s`.
+
+### 2. Cost-Aware Scaling Ladder & The `(N−1)/N` AZ Headroom Law
+- **Unit Anchors**: Cross-AZ transfer `~$0.01/GB` each way (`1 GB/s ≈ $50k/mo` round-trip), egress `$0.05–0.09/GB`, hot vs. archive object storage `$0.023` vs. `$0.001/GB-mo` (`~20×`), spot compute `60–90%` off (non-quorum only), `6+3` erasure coding `1.5×` (`50%` cheaper than RF=3).
+- **Cut Ladder (Lowest to Highest Risk)**: `(1)` TTL/downsample/tier cold data $\to$ `(2)` autoscale on lag/concurrency $\to$ `(3)` same-AZ follower reads + `zstd` + RPC batching $\to$ `(4)` spot stateless/batch workers $\to$ `(5)` lift cache hit rate `90% -> 99%` (`10×` less origin load) $\to$ `(6)` downgrade multi-region/consistency guarantees *(explicit product sign-off required)*.
+- **AZ Headroom Rule**: Peak utilization across $N$ AZs must not exceed $(N-1)/N$ (`~66%` for 3 AZs), otherwise losing one AZ pushes survivors above `100%` into correlated overload.
+
+### 3. Six Follow-Up Templates, `"us-east down"` & 6-Week MVP Scoping
+1. **`When X dies`**: *Blast radius $\to$ Detection $\to$ Mitigation $\to$ Recovery $\to$ Data loss* (e.g. `"us-east down"`: cite per-store RPO/lag window, storage-epoch STONITH fencing, failback quarantine, shared KMS/IAM risk).
+2. **`10× traffic`**: Name both the **1st and 2nd bottlenecks** with throughput ceilings.
+3. **`Multi-region`**: Choose active-passive, home-region affinity, or CRDT/LWW + quote `70–150ms` sync cost (*"strong where money moves, eventual everywhere else"*).
+4. **`Observability`**: SLIs (`p99`, errors, lag) + multi-window burn alerts + business canary + synthetics.
+5. **`Weakest part?`**: Proactively critique your bottleneck and threshold *before* being asked.
+6. **`Why not Y?`**: `"Y works when ..., ruled out by <constraint>, would switch if <metric>"`.
+- **Static Stability & 6-Week Scope Rule**: Ensure data planes continue serving last-known-good state/config during control-plane outages. Under tight headcount (`"half the engineers / 6 weeks"`), keep **correctness invariants** (idempotency, fencing, durability) in v1, cut **scale optimizations** (multi-region active-active, ML rankers, AV1, batched Hungarian matching) to v2, and name the exact metric trigger that unlocks each v2 phase.
+
+
 
 
 

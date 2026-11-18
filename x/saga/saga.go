@@ -32,11 +32,17 @@ type ExecutionResult struct {
 	Error       error         `json:"error,omitempty"`
 }
 
+// Store persists intermediate and terminal Saga execution checkpoints for crash recovery and auditing.
+type Store interface {
+	SaveState(ctx context.Context, result *ExecutionResult) error
+}
+
 // Saga coordinates multi-step distributed transactions with automated reverse compensations.
 type Saga struct {
 	id    string
 	name  string
 	steps []Step
+	store Store
 }
 
 // New constructs a new Saga orchestrator.
@@ -46,6 +52,34 @@ func New(name string) *Saga {
 		name:  name,
 		steps: make([]Step, 0),
 	}
+}
+
+// WithID overrides the generated Saga identifier (e.g. to bind to an idempotency or order ID).
+func (s *Saga) WithID(id string) *Saga {
+	if id != "" {
+		s.id = id
+	}
+	return s
+}
+
+// WithStore attaches a persistent Store to receive execution checkpoints after each step and transition.
+func (s *Saga) WithStore(store Store) *Saga {
+	s.store = store
+	return s
+}
+
+func (s *Saga) saveCheckpoint(ctx context.Context, res *ExecutionResult) {
+	if s.store == nil || res == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stepsCopy := make([]StepResult, len(res.StepResults))
+	copy(stepsCopy, res.StepResults)
+	snapshot := *res
+	snapshot.StepResults = stepsCopy
+	_ = s.store.SaveState(ctx, &snapshot)
 }
 
 // AddStep appends a forward action and its compensating rollback step.
@@ -84,6 +118,7 @@ func (s *Saga) Execute(ctx context.Context) (*ExecutionResult, error) {
 			})
 
 			// 2. Trigger reverse compensations
+			s.saveCheckpoint(ctx, result)
 			s.compensate(executedSteps, result)
 			result.Duration = time.Since(start)
 			return result, result.Error
@@ -95,10 +130,12 @@ func (s *Saga) Execute(ctx context.Context) (*ExecutionResult, error) {
 			Status:   StepStatusSucceeded,
 			Duration: duration,
 		})
+		s.saveCheckpoint(ctx, result)
 	}
 
 	result.State = StateCompleted
 	result.Duration = time.Since(start)
+	s.saveCheckpoint(ctx, result)
 	return result, nil
 }
 
@@ -109,6 +146,7 @@ func (s *Saga) compensate(executedIndices []int, result *ExecutionResult) {
 	// Create detached context with timeout for compensations in case original ctx is expired
 	compCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	s.saveCheckpoint(compCtx, result)
 
 	// Reverse compensation loop
 	for i := len(executedIndices) - 1; i >= 0; i-- {
@@ -134,4 +172,5 @@ func (s *Saga) compensate(executedIndices []int, result *ExecutionResult) {
 	} else {
 		result.State = StateFailed
 	}
+	s.saveCheckpoint(compCtx, result)
 }

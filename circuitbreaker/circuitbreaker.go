@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -38,8 +39,13 @@ type Config struct {
 	MaxFailures int
 	// ResetTimeout is how long the circuit stays open before moving to half-open (default: 30s).
 	ResetTimeout time.Duration
+	// ResetTimeoutJitter adds randomized backoff fraction in [0, 1] on top of ResetTimeout
+	// (e.g. 0.2 adds up to 20% jitter) so replicas do not stampede an injured downstream.
+	ResetTimeoutJitter float64
 	// ExecutionTimeout is the maximum time allowed for a single execution (0 = no timeout).
 	ExecutionTimeout time.Duration
+	// SlowCallThreshold marks calls taking >= SlowCallThreshold as circuit failures even if err == nil.
+	SlowCallThreshold time.Duration
 	// MaxHalfOpenRequests is the maximum concurrent trial requests permitted in StateHalfOpen (default: 1).
 	MaxHalfOpenRequests int
 	// FailureRatio, when > 0 (e.g. 0.5 for 50%), opens the circuit when at least MinRequests
@@ -65,6 +71,7 @@ type CircuitBreaker struct {
 	state             State
 	failures          int
 	lastFail          time.Time
+	openWait          time.Duration
 	halfOpenInFlight  int
 	halfOpenSuccesses int
 	windowStart       time.Time
@@ -79,6 +86,11 @@ func New(cfg Config) *CircuitBreaker {
 	}
 	if cfg.ResetTimeout == 0 {
 		cfg.ResetTimeout = 30 * time.Second
+	}
+	if cfg.ResetTimeoutJitter < 0 {
+		cfg.ResetTimeoutJitter = 0
+	} else if cfg.ResetTimeoutJitter > 1 {
+		cfg.ResetTimeoutJitter = 1
 	}
 	if cfg.MaxHalfOpenRequests <= 0 {
 		cfg.MaxHalfOpenRequests = 1
@@ -114,7 +126,11 @@ func (cb *CircuitBreaker) State() State {
 
 // currentStateLocked must be called with cb.mu held.
 func (cb *CircuitBreaker) currentStateLocked() (State, *stateTransition) {
-	if cb.state == StateOpen && time.Since(cb.lastFail) >= cb.cfg.ResetTimeout {
+	wait := cb.openWait
+	if wait <= 0 {
+		wait = cb.cfg.ResetTimeout
+	}
+	if cb.state == StateOpen && time.Since(cb.lastFail) >= wait {
 		tr := cb.transitionLocked(StateHalfOpen)
 		return cb.state, tr
 	}
@@ -189,7 +205,9 @@ func (cb *CircuitBreaker) execute(ctx context.Context, fn func(context.Context) 
 	if cb.cfg.ExecutionTimeout > 0 {
 		execCtx, cancel = context.WithTimeout(ctx, cb.cfg.ExecutionTimeout)
 	}
+	callStart := time.Now()
 	err := fn(execCtx)
+	callDuration := time.Since(callStart)
 	timedOut := cancel != nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil && (err == nil || errors.Is(err, context.DeadlineExceeded))
 	if cancel != nil {
 		cancel()
@@ -203,8 +221,9 @@ func (cb *CircuitBreaker) execute(ctx context.Context, fn func(context.Context) 
 		cb.halfOpenInFlight--
 	}
 	completed = true
+	slowCall := cb.cfg.SlowCallThreshold > 0 && callDuration >= cb.cfg.SlowCallThreshold
 	var postTr *stateTransition
-	if err != nil {
+	if err != nil || slowCall {
 		postTr = cb.onFailureLocked()
 	} else {
 		postTr = cb.onSuccessLocked()
@@ -277,6 +296,12 @@ func (cb *CircuitBreaker) transitionLocked(to State) *stateTransition {
 	case StateOpen:
 		cb.halfOpenInFlight = 0
 		cb.halfOpenSuccesses = 0
+		wait := cb.cfg.ResetTimeout
+		if cb.cfg.ResetTimeoutJitter > 0 && wait > 0 {
+			jitterMax := float64(wait) * cb.cfg.ResetTimeoutJitter
+			wait += time.Duration(rand.Float64() * jitterMax) //nolint:gosec // jitter avoids thundering herd probes
+		}
+		cb.openWait = wait
 	}
 	if from == to {
 		return nil

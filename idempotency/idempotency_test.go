@@ -594,3 +594,111 @@ func TestGK12_IdempotencyHardening(t *testing.T) {
 		}
 	})
 }
+
+type postLockRaceStore struct {
+	idempotency.Store
+	onLock func()
+}
+
+func (s *postLockRaceStore) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if s.onLock != nil {
+		s.onLock()
+	}
+	return s.Store.Lock(ctx, key, ttl)
+}
+
+func TestIdempotency_PostLockDoubleCheck(t *testing.T) {
+	ctx := context.Background()
+	seedStore := idempotency.NewInMemoryStore()
+	seedMW := idempotency.Middleware(idempotency.Config{
+		Store: seedStore,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"charged":100}`))
+	}))
+
+	seedReq := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amt":100}`))
+	seedReq.Header.Set("Idempotency-Key", "toctou-key")
+	seedMW.ServeHTTP(httptest.NewRecorder(), seedReq)
+
+	seededResp, found, err := seedStore.Get(ctx, "toctou-key")
+	if err != nil || !found {
+		t.Fatalf("failed to seed idempotency response: found=%v err=%v", found, err)
+	}
+
+	t.Run("replays cached response if saved between Get and Lock", func(t *testing.T) {
+		base := idempotency.NewInMemoryStore()
+		var once sync.Once
+		raceStore := &postLockRaceStore{
+			Store: base,
+			onLock: func() {
+				once.Do(func() {
+					_ = base.Save(ctx, "toctou-key", seededResp, time.Minute)
+				})
+			},
+		}
+
+		var execCount atomic.Int32
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: raceStore,
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			execCount.Add(1)
+			w.WriteHeader(http.StatusCreated)
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amt":100}`))
+		req.Header.Set("Idempotency-Key", "toctou-key")
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created replay, got %d", rec.Code)
+		}
+		if rec.Header().Get("Idempotent-Replayed") != "true" {
+			t.Fatalf("expected Idempotent-Replayed=true, got %q", rec.Header().Get("Idempotent-Replayed"))
+		}
+		if execCount.Load() != 0 {
+			t.Fatalf("expected 0 handler executions on post-lock replay, got %d", execCount.Load())
+		}
+		// Lock must be released after short-circuiting.
+		if ok, lockErr := base.Lock(ctx, "toctou-key", time.Minute); lockErr != nil || !ok {
+			t.Fatalf("expected lock to be released after post-lock replay: ok=%v err=%v", ok, lockErr)
+		}
+	})
+
+	t.Run("returns 422 on payload mismatch discovered after Lock", func(t *testing.T) {
+		base := idempotency.NewInMemoryStore()
+		var once sync.Once
+		raceStore := &postLockRaceStore{
+			Store: base,
+			onLock: func() {
+				once.Do(func() {
+					_ = base.Save(ctx, "toctou-key", seededResp, time.Minute)
+				})
+			},
+		}
+
+		var execCount atomic.Int32
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: raceStore,
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			execCount.Add(1)
+			w.WriteHeader(http.StatusCreated)
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amt":999}`))
+		req.Header.Set("Idempotency-Key", "toctou-key")
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 Unprocessable Entity on payload mismatch, got %d", rec.Code)
+		}
+		if execCount.Load() != 0 {
+			t.Fatalf("expected 0 handler executions on 422 mismatch, got %d", execCount.Load())
+		}
+		if ok, lockErr := base.Lock(ctx, "toctou-key", time.Minute); lockErr != nil || !ok {
+			t.Fatalf("expected lock to be released after 422 mismatch: ok=%v err=%v", ok, lockErr)
+		}
+	})
+}

@@ -35,6 +35,8 @@ type RetryPolicy struct {
 	RetryNonIdempotent bool
 	// RetryCondition allows custom logic to determine whether an error/response is retryable.
 	RetryCondition func(resp *http.Response, err error) bool
+	// Budget optionally caps retry amplification over a sliding window (e.g. <= 10% retry ratio).
+	Budget *RetryBudget
 }
 
 // DefaultRetryPolicy returns a sensible default retry policy for production.
@@ -125,6 +127,13 @@ func WithMaxRetries(n int) Option {
 func WithRetryNonIdempotent(enabled bool) Option {
 	return func(c *Config) {
 		c.Retry.RetryNonIdempotent = enabled
+	}
+}
+
+// WithRetryBudget attaches a shared RetryBudget to cap aggregate retry amplification.
+func WithRetryBudget(b *RetryBudget) Option {
+	return func(c *Config) {
+		c.Retry.Budget = b
 	}
 }
 

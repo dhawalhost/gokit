@@ -210,3 +210,35 @@ func TestGK15_RateLimitRaceDoubleStopAndGCRA(t *testing.T) {
 		}
 	})
 }
+
+func TestInMemoryAllowN(t *testing.T) {
+	store := ratelimit.NewInMemoryStoreWithTTL(time.Minute)
+	defer store.Stop()
+	ctx := context.Background()
+
+	res1, err := store.AllowN(ctx, "weighted", 3, 1, 5)
+	if err != nil {
+		t.Fatalf("AllowN(3): %v", err)
+	}
+	if !res1.Allowed || res1.Limit != 5 || res1.Remaining != 2 {
+		t.Fatalf("unexpected first result: %+v", res1)
+	}
+
+	// Remaining is 2, so cost=3 should be denied without deducting the 2 tokens.
+	res2, err := store.AllowN(ctx, "weighted", 3, 1, 5)
+	if err != nil {
+		t.Fatalf("AllowN(3) second call: %v", err)
+	}
+	if res2.Allowed || res2.Remaining != 2 || res2.RetryAfter <= 0 {
+		t.Fatalf("expected denial with remaining=2 and positive RetryAfter, got %+v", res2)
+	}
+
+	// Now cost=2 should succeed because failed AllowN(3) did not consume tokens.
+	res3, err := store.AllowN(ctx, "weighted", 2, 1, 5)
+	if err != nil {
+		t.Fatalf("AllowN(2): %v", err)
+	}
+	if !res3.Allowed || res3.Remaining != 0 {
+		t.Fatalf("expected cost=2 to succeed with remaining=0, got %+v", res3)
+	}
+}

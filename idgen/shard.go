@@ -19,26 +19,46 @@ const (
 	timestampShift = sequenceBits + shardIDBits
 )
 
+// ShardOption configures a ShardIDGenerator.
+type ShardOption func(*ShardIDGenerator)
+
+// WithMaxBackwardDrift sets the maximum backward clock skew the generator
+// waits out before returning an error. Defaults to 0 (fail immediately on skew).
+func WithMaxBackwardDrift(d time.Duration) ShardOption {
+	return func(g *ShardIDGenerator) {
+		if d > 0 {
+			g.maxBackwardDriftMs = d.Milliseconds()
+		}
+	}
+}
+
 // ShardIDGenerator generates 64-bit time-sortable IDs that embed the logical shard ID.
 // Bit layout:
 // - 41 bits: timestamp in milliseconds since custom epoch (covers ~69 years).
 // - 13 bits: logical shard ID (0 to 8191 logical shards).
 // - 10 bits: monotonic sequence (0 to 1023 IDs per millisecond per shard).
 type ShardIDGenerator struct {
-	mu       sync.Mutex
-	shardID  uint16
-	lastTime int64
-	sequence int64
+	mu                 sync.Mutex
+	shardID            uint16
+	lastTime           int64
+	sequence           int64
+	maxBackwardDriftMs int64
 }
 
 // NewShardIDGenerator creates an ID generator bound to a specific logical shard ID (0 - 8191).
-func NewShardIDGenerator(shardID uint16) (*ShardIDGenerator, error) {
+func NewShardIDGenerator(shardID uint16, opts ...ShardOption) (*ShardIDGenerator, error) {
 	if shardID > maxShardID {
 		return nil, fmt.Errorf("idgen: shard ID %d exceeds maximum %d", shardID, maxShardID)
 	}
-	return &ShardIDGenerator{
+	g := &ShardIDGenerator{
 		shardID: shardID,
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(g)
+		}
+	}
+	return g, nil
 }
 
 // NextID generates the next 64-bit shard-aware time-sorted ID.
@@ -48,7 +68,18 @@ func (g *ShardIDGenerator) NextID() (int64, error) {
 
 	now := time.Now().UnixMilli()
 	if now < g.lastTime {
-		return 0, errors.New("idgen: clock moved backwards")
+		drift := g.lastTime - now
+		if g.maxBackwardDriftMs <= 0 || drift > g.maxBackwardDriftMs {
+			return 0, errors.New("idgen: clock moved backwards")
+		}
+		deadline := time.Now().Add(time.Duration(g.maxBackwardDriftMs) * time.Millisecond)
+		for now < g.lastTime {
+			if time.Now().After(deadline) {
+				return 0, errors.New("idgen: clock moved backwards")
+			}
+			time.Sleep(100 * time.Microsecond)
+			now = time.Now().UnixMilli()
+		}
 	}
 
 	if now == g.lastTime {

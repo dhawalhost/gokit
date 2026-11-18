@@ -393,23 +393,7 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 			}
 
 			if found && cachedResp != nil {
-				// Anti-collision check: verify payload fingerprint
-				if cachedResp.Fingerprint != fingerprint {
-					writeJSONError(w, http.StatusUnprocessableEntity,
-						`{"code":"IDEMPOTENCY_KEY_MISMATCH","message":"idempotency key was previously used with a different request payload"}`)
-					return
-				}
-
-				// Replay the cached response
-				for k, vals := range cachedResp.Headers {
-					for _, v := range vals {
-						w.Header().Add(k, v)
-					}
-				}
-				w.Header().Set(cfg.ReplayedHeader, "true")
-				w.WriteHeader(cachedResp.StatusCode)
-				//nolint:gosec // #nosec G705 -- replaying previously cached response body
-				_, _ = w.Write(cachedResp.Body)
+				writeCachedOrMismatch(w, cachedResp, fingerprint, cfg.ReplayedHeader)
 				return
 			}
 
@@ -426,13 +410,26 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Ensure lock is released in case of panic, 5xx skip, or unhandled error
+			// Ensure lock is released in case of panic, 5xx skip, post-lock replay, or unhandled error
 			var completed bool
 			defer func() {
 				if !completed {
 					_ = cfg.Store.Unlock(context.Background(), scopedKey)
 				}
 			}()
+
+			// Re-check after acquiring the lock to close the TOCTOU window where an
+			// in-flight owner finished and saved its response between Get and Lock.
+			cachedResp, found, err = cfg.Store.Get(ctx, scopedKey)
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable,
+					`{"code":"IDEMPOTENCY_STORE_UNAVAILABLE","message":"idempotency store unavailable"}`)
+				return
+			}
+			if found && cachedResp != nil {
+				writeCachedOrMismatch(w, cachedResp, fingerprint, cfg.ReplayedHeader)
+				return
+			}
 
 			rec := &responseRecorder{
 				ResponseWriter: w,
@@ -465,6 +462,23 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 			}
 		})
 	}
+}
+
+func writeCachedOrMismatch(w http.ResponseWriter, cachedResp *Response, fingerprint, replayedHeader string) {
+	if cachedResp.Fingerprint != fingerprint {
+		writeJSONError(w, http.StatusUnprocessableEntity,
+			`{"code":"IDEMPOTENCY_KEY_MISMATCH","message":"idempotency key was previously used with a different request payload"}`)
+		return
+	}
+	for k, vals := range cachedResp.Headers {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set(replayedHeader, "true")
+	w.WriteHeader(cachedResp.StatusCode)
+	//nolint:gosec // #nosec G705 -- replaying previously cached response body
+	_, _ = w.Write(cachedResp.Body)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, body string) {

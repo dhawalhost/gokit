@@ -331,3 +331,47 @@ func TestGK13_CircuitBreakerHalfOpenAndCallback(t *testing.T) {
 		}
 	})
 }
+
+func TestCircuitBreaker_SlowCallAndResetJitter(t *testing.T) {
+	t.Run("SlowCallThreshold counts slow nil-error calls as failures", func(t *testing.T) {
+		cb := circuitbreaker.New(circuitbreaker.Config{
+			Name:              "slow-call-cb",
+			MaxFailures:       2,
+			SlowCallThreshold: 15 * time.Millisecond,
+			ResetTimeout:      time.Second,
+		})
+
+		for i := 0; i < 2; i++ {
+			err := cb.Execute(func() error {
+				time.Sleep(25 * time.Millisecond)
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("slow call %d should still return nil caller error, got %v", i, err)
+			}
+		}
+
+		if cb.State() != circuitbreaker.StateOpen {
+			t.Fatalf("expected StateOpen after 2 slow calls, got %v", cb.State())
+		}
+	})
+
+	t.Run("ResetTimeoutJitter keeps ResetTimeout within [base, base*(1+jitter)]", func(t *testing.T) {
+		cb := circuitbreaker.New(circuitbreaker.Config{
+			Name:               "jitter-cb",
+			MaxFailures:        1,
+			ResetTimeout:       20 * time.Millisecond,
+			ResetTimeoutJitter: 0.5,
+		})
+		_ = cb.Execute(func() error { return errors.New("boom") })
+		if cb.State() != circuitbreaker.StateOpen {
+			t.Fatalf("expected StateOpen immediately, got %v", cb.State())
+		}
+
+		// After base*(1+jitter) + buffer, circuit must transition to StateHalfOpen.
+		time.Sleep(35 * time.Millisecond)
+		if cb.State() != circuitbreaker.StateHalfOpen {
+			t.Fatalf("expected StateHalfOpen after jittered timeout, got %v", cb.State())
+		}
+	})
+}

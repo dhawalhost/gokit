@@ -4,14 +4,117 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+type budgetBucket struct {
+	slot     int64
+	requests int64
+	retries  int64
+}
+
+// RetryBudget limits aggregate retry amplification over a sliding window.
+type RetryBudget struct {
+	mu            sync.Mutex
+	maxRetryRatio float64
+	minRetries    float64
+	bucketWidth   time.Duration
+	buckets       []budgetBucket
+}
+
+// NewRetryBudget constructs a sliding-window RetryBudget permitting up to maxRetryRatio
+// of recent base requests as retries, with an optional minRetriesPerSec baseline floor.
+func NewRetryBudget(maxRetryRatio float64, minRetriesPerSec int, window time.Duration) *RetryBudget {
+	const numBuckets = 10
+	if window <= 0 {
+		window = 10 * time.Second
+	}
+	width := window / numBuckets
+	if width <= 0 {
+		width = time.Millisecond
+		window = numBuckets * width
+	}
+	if maxRetryRatio < 0 {
+		maxRetryRatio = 0
+	}
+	if maxRetryRatio == 0 && minRetriesPerSec <= 0 {
+		maxRetryRatio = 0.10
+	}
+	minRetries := float64(minRetriesPerSec) * window.Seconds()
+	if minRetries < 0 {
+		minRetries = 0
+	}
+
+	buckets := make([]budgetBucket, numBuckets)
+	for i := range buckets {
+		buckets[i].slot = -1
+	}
+
+	return &RetryBudget{
+		maxRetryRatio: maxRetryRatio,
+		minRetries:    minRetries,
+		bucketWidth:   width,
+		buckets:       buckets,
+	}
+}
+
+// RecordRequest records an initial outbound request into the budget window.
+func (b *RetryBudget) RecordRequest() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.currentBucketLocked(time.Now()).requests++
+}
+
+// TryAcquireRetry atomically checks if a retry is within budget and consumes one retry slot.
+func (b *RetryBudget) TryAcquireRetry() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	now := time.Now()
+	reqCount, retryCount := b.totalsLocked(now)
+	ratioAllowed := math.Floor(b.maxRetryRatio * float64(reqCount))
+	allowed := math.Max(b.minRetries, ratioAllowed)
+	if float64(retryCount+1) > allowed {
+		return false
+	}
+	b.currentBucketLocked(now).retries++
+	return true
+}
+
+func (b *RetryBudget) slotFor(now time.Time) int64 {
+	return now.UnixNano() / b.bucketWidth.Nanoseconds()
+}
+
+func (b *RetryBudget) currentBucketLocked(now time.Time) *budgetBucket {
+	slot := b.slotFor(now)
+	n := int64(len(b.buckets))
+	idx := int(((slot % n) + n) % n)
+	if b.buckets[idx].slot != slot {
+		b.buckets[idx] = budgetBucket{slot: slot}
+	}
+	return &b.buckets[idx]
+}
+
+func (b *RetryBudget) totalsLocked(now time.Time) (int64, int64) {
+	curr := b.slotFor(now)
+	n := int64(len(b.buckets))
+	var reqs, retries int64
+	for i := range b.buckets {
+		if b.buckets[i].slot >= 0 && curr-b.buckets[i].slot < n {
+			reqs += b.buckets[i].requests
+			retries += b.buckets[i].retries
+		}
+	}
+	return reqs, retries
+}
 
 // calculateBackoff computes the delay before retry attempt (0-indexed).
 func (rp *RetryPolicy) calculateBackoff(attempt int, resp *http.Response) time.Duration {

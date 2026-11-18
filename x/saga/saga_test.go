@@ -141,3 +141,64 @@ func TestSaga_Execution(t *testing.T) {
 		})
 	}
 }
+
+type recordingSagaStore struct {
+	snapshots []*saga.ExecutionResult
+}
+
+func (r *recordingSagaStore) SaveState(_ context.Context, res *saga.ExecutionResult) error {
+	r.snapshots = append(r.snapshots, res)
+	return nil
+}
+
+func TestSaga_WithStoreCheckpoints(t *testing.T) {
+	t.Run("persists deep-copied step and completion checkpoints on success", func(t *testing.T) {
+		store := &recordingSagaStore{}
+		s := saga.New("checkout").WithID("ord-42").WithStore(store).
+			AddStep(saga.NewStep("reserve", func(context.Context) error { return nil }, nil)).
+			AddStep(saga.NewStep("capture", func(context.Context) error { return nil }, nil))
+
+		res, err := s.Execute(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.SagaID != "ord-42" || res.State != saga.StateCompleted {
+			t.Fatalf("unexpected result: %+v", res)
+		}
+		// 2 step checkpoints + 1 terminal completed checkpoint = 3.
+		if len(store.snapshots) != 3 {
+			t.Fatalf("expected 3 checkpoints, got %d", len(store.snapshots))
+		}
+		if store.snapshots[0].State != saga.StateRunning || len(store.snapshots[0].StepResults) != 1 {
+			t.Fatalf("expected first checkpoint running with 1 step, got %+v", store.snapshots[0])
+		}
+		if store.snapshots[2].State != saga.StateCompleted || len(store.snapshots[2].StepResults) != 2 {
+			t.Fatalf("expected final checkpoint completed with 2 steps, got %+v", store.snapshots[2])
+		}
+	})
+
+	t.Run("persists compensating and compensated checkpoints on failure", func(t *testing.T) {
+		store := &recordingSagaStore{}
+		s := saga.New("checkout").WithID("ord-99").WithStore(store).
+			AddStep(saga.NewStep("reserve",
+				func(context.Context) error { return nil },
+				func(context.Context) error { return nil },
+			)).
+			AddStep(saga.NewStep("capture",
+				func(context.Context) error { return errors.New("declined") },
+				nil,
+			))
+
+		res, err := s.Execute(context.Background())
+		if err == nil || res.State != saga.StateCompensated {
+			t.Fatalf("expected compensated failure, got state=%s err=%v", res.State, err)
+		}
+		last := store.snapshots[len(store.snapshots)-1]
+		if last.State != saga.StateCompensated || last.FailedStep != "capture" {
+			t.Fatalf("expected terminal compensated checkpoint for 'capture', got %+v", last)
+		}
+		if len(last.StepResults) != 2 || last.StepResults[0].Status != saga.StepStatusCompensated {
+			t.Fatalf("expected step 0 marked compensated in final checkpoint, got %+v", last.StepResults)
+		}
+	})
+}

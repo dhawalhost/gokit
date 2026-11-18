@@ -115,3 +115,34 @@ func TestRedisStoreWindowExpiry(t *testing.T) {
 		t.Error("expected request allowed after window expired")
 	}
 }
+
+func TestRedisStoreAllowN(t *testing.T) {
+	store, _ := newRedisStore(t)
+	ctx := context.Background()
+
+	res1, err := store.AllowN(ctx, "gcra-weighted", 3, 1, 5)
+	if err != nil {
+		t.Fatalf("Redis AllowN(3): %v", err)
+	}
+	if !res1.Allowed || res1.Limit != 5 || res1.Remaining != 2 || res1.ResetAfter <= 0 {
+		t.Fatalf("unexpected first Redis AllowN result: %+v", res1)
+	}
+
+	// Requesting cost=3 when only 2 remain should deny and report RetryAfter > 0.
+	res2, err := store.AllowN(ctx, "gcra-weighted", 3, 1, 5)
+	if err != nil {
+		t.Fatalf("Redis AllowN(3) denial: %v", err)
+	}
+	if res2.Allowed || res2.Remaining != 2 || res2.RetryAfter <= 0 {
+		t.Fatalf("expected denial with remaining=2 and positive RetryAfter, got %+v", res2)
+	}
+
+	// Requesting cost=2 should consume remaining tokens cleanly.
+	res3, err := store.AllowN(ctx, "gcra-weighted", 2, 1, 5)
+	if err != nil {
+		t.Fatalf("Redis AllowN(2): %v", err)
+	}
+	if !res3.Allowed || res3.Remaining != 0 {
+		t.Fatalf("expected remaining=0 after cost=2, got %+v", res3)
+	}
+}

@@ -990,3 +990,41 @@ func TestGK06_MethodAwareRetries(t *testing.T) {
 		}
 	})
 }
+
+func TestClient_RetryBudget(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	// 10 initial requests * 0.2 ratio = 2 retries allowed total (no low-QPS floor).
+	budget := client.NewRetryBudget(0.2, 0, 5*time.Second)
+	c := client.New(
+		client.WithRetryPolicy(client.RetryPolicy{
+			MaxRetries:           3,
+			InitialBackoff:       1 * time.Millisecond,
+			MaxBackoff:           2 * time.Millisecond,
+			RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+		}),
+		client.WithRetryBudget(budget),
+		client.WithLogger(zap.NewNop()),
+	)
+
+	// Send 10 failing GET requests: initial attempts = 10, retries capped at 2 => max 12 hits total.
+	for i := 0; i < 10; i++ {
+		resp, err := c.Get(context.Background(), srv.URL)
+		if err != nil {
+			t.Fatalf("Get %d failed: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	if got := hits.Load(); got > 12 {
+		t.Fatalf("expected retry budget (0.2 on 10 reqs = 2 retries) to cap total attempts at <=12, got %d", got)
+	}
+	if got := hits.Load(); got < 11 {
+		t.Fatalf("expected at least 1 retry within budget, got %d total hits", got)
+	}
+}
