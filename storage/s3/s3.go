@@ -1,4 +1,4 @@
-package storage
+package s3
 
 import (
 	"context"
@@ -14,7 +14,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+
+	"github.com/dhawalhost/gokit/storage"
 )
+
+// Config aliases S3Config for ergonomic use as s3.Config.
+type Config = S3Config
+
+// Storage aliases S3Storage for ergonomic use as s3.Storage.
+type Storage = S3Storage
+
+// New initializes an S3Storage instance (alias of NewS3).
+func New(ctx context.Context, cfg S3Config) (*S3Storage, error) {
+	return NewS3(ctx, cfg)
+}
 
 // S3Config holds configuration parameters for the S3-compatible storage driver.
 type S3Config struct {
@@ -39,7 +52,7 @@ type S3Config struct {
 	Client *s3.Client
 }
 
-// S3Storage provides a production-grade Storage implementation for Amazon S3,
+// S3Storage provides a production-grade storage.Storage implementation for Amazon S3,
 // MinIO, Cloudflare R2, Google Cloud Storage, and other S3-compatible object stores.
 type S3Storage struct {
 	client        *s3.Client
@@ -90,12 +103,12 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 }
 
 // Put uploads an object to S3.
-func (s *S3Storage) Put(ctx context.Context, key string, r io.Reader, opts ...PutOption) (*ObjectInfo, error) {
+func (s *S3Storage) Put(ctx context.Context, key string, r io.Reader, opts ...storage.PutOption) (*storage.ObjectInfo, error) {
 	if strings.TrimSpace(key) == "" {
-		return nil, ErrInvalidKey
+		return nil, storage.ErrInvalidKey
 	}
 
-	var options PutOptions
+	var options storage.PutOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -124,7 +137,7 @@ func (s *S3Storage) Put(ctx context.Context, key string, r io.Reader, opts ...Pu
 		etag = strings.Trim(*out.ETag, `"`)
 	}
 
-	return &ObjectInfo{
+	return &storage.ObjectInfo{
 		Key:          key,
 		Size:         options.ContentLength,
 		ContentType:  options.ContentType,
@@ -135,12 +148,12 @@ func (s *S3Storage) Put(ctx context.Context, key string, r io.Reader, opts ...Pu
 }
 
 // Get downloads an object from S3.
-func (s *S3Storage) Get(ctx context.Context, key string, opts ...GetOption) (io.ReadCloser, *ObjectInfo, error) {
+func (s *S3Storage) Get(ctx context.Context, key string, opts ...storage.GetOption) (io.ReadCloser, *storage.ObjectInfo, error) {
 	if strings.TrimSpace(key) == "" {
-		return nil, nil, ErrInvalidKey
+		return nil, nil, storage.ErrInvalidKey
 	}
 
-	var options GetOptions
+	var options storage.GetOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -154,7 +167,7 @@ func (s *S3Storage) Get(ctx context.Context, key string, opts ...GetOption) (io.
 		start := *options.RangeStart
 		end := *options.RangeEnd
 		if start < 0 || end < start {
-			return nil, nil, ErrInvalidRange
+			return nil, nil, storage.ErrInvalidRange
 		}
 		input.Range = aws.String(fmt.Sprintf("bytes=%d-%d", start, end))
 	}
@@ -162,7 +175,7 @@ func (s *S3Storage) Get(ctx context.Context, key string, opts ...GetOption) (io.
 	out, err := s.client.GetObject(ctx, input)
 	if err != nil {
 		if isS3NotFound(err) {
-			return nil, nil, ErrNotFound
+			return nil, nil, storage.ErrNotFound
 		}
 		return nil, nil, fmt.Errorf("storage: s3 get object: %w", err)
 	}
@@ -174,7 +187,7 @@ func (s *S3Storage) Get(ctx context.Context, key string, opts ...GetOption) (io.
 // Delete removes an object from S3.
 func (s *S3Storage) Delete(ctx context.Context, key string) error {
 	if strings.TrimSpace(key) == "" {
-		return ErrInvalidKey
+		return storage.ErrInvalidKey
 	}
 
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
@@ -225,7 +238,7 @@ func (s *S3Storage) DeleteMulti(ctx context.Context, keys ...string) error {
 // Exists checks if an object exists in S3 via HeadObject.
 func (s *S3Storage) Exists(ctx context.Context, key string) (bool, error) {
 	if strings.TrimSpace(key) == "" {
-		return false, ErrInvalidKey
+		return false, storage.ErrInvalidKey
 	}
 
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -242,9 +255,9 @@ func (s *S3Storage) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // Stat retrieves object metadata without reading the payload.
-func (s *S3Storage) Stat(ctx context.Context, key string) (*ObjectInfo, error) {
+func (s *S3Storage) Stat(ctx context.Context, key string) (*storage.ObjectInfo, error) {
 	if strings.TrimSpace(key) == "" {
-		return nil, ErrInvalidKey
+		return nil, storage.ErrInvalidKey
 	}
 
 	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -253,7 +266,7 @@ func (s *S3Storage) Stat(ctx context.Context, key string) (*ObjectInfo, error) {
 	})
 	if err != nil {
 		if isS3NotFound(err) {
-			return nil, ErrNotFound
+			return nil, storage.ErrNotFound
 		}
 		return nil, fmt.Errorf("storage: s3 head object: %w", err)
 	}
@@ -263,8 +276,8 @@ func (s *S3Storage) Stat(ctx context.Context, key string) (*ObjectInfo, error) {
 }
 
 // List queries objects matching prefix using S3 ListObjectsV2.
-func (s *S3Storage) List(ctx context.Context, prefix string, opts ...ListOption) (*ListResult, error) {
-	var options ListOptions
+func (s *S3Storage) List(ctx context.Context, prefix string, opts ...storage.ListOption) (*storage.ListResult, error) {
+	var options storage.ListOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -300,8 +313,8 @@ func (s *S3Storage) List(ctx context.Context, prefix string, opts ...ListOption)
 		isTruncated = *out.IsTruncated
 	}
 
-	res := &ListResult{
-		Objects:        make([]ObjectInfo, 0, len(out.Contents)),
+	res := &storage.ListResult{
+		Objects:        make([]storage.ObjectInfo, 0, len(out.Contents)),
 		CommonPrefixes: make([]string, 0, len(out.CommonPrefixes)),
 		IsTruncated:    isTruncated,
 	}
@@ -323,7 +336,7 @@ func (s *S3Storage) List(ctx context.Context, prefix string, opts ...ListOption)
 		if item.Size != nil {
 			size = *item.Size
 		}
-		res.Objects = append(res.Objects, ObjectInfo{
+		res.Objects = append(res.Objects, storage.ObjectInfo{
 			Key:          aws.ToString(item.Key),
 			Size:         size,
 			ETag:         etag,
@@ -341,9 +354,9 @@ func (s *S3Storage) List(ctx context.Context, prefix string, opts ...ListOption)
 }
 
 // PresignGet generates an AWS SigV4 signed GET URL for downloading an object.
-func (s *S3Storage) PresignGet(ctx context.Context, key string, ttl time.Duration, _ ...PresignOption) (string, error) {
+func (s *S3Storage) PresignGet(ctx context.Context, key string, ttl time.Duration, _ ...storage.PresignOption) (string, error) {
 	if strings.TrimSpace(key) == "" {
-		return "", ErrInvalidKey
+		return "", storage.ErrInvalidKey
 	}
 
 	req, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
@@ -358,12 +371,12 @@ func (s *S3Storage) PresignGet(ctx context.Context, key string, ttl time.Duratio
 }
 
 // PresignPut generates an AWS SigV4 signed PUT URL for uploading an object.
-func (s *S3Storage) PresignPut(ctx context.Context, key string, ttl time.Duration, opts ...PresignOption) (string, error) {
+func (s *S3Storage) PresignPut(ctx context.Context, key string, ttl time.Duration, opts ...storage.PresignOption) (string, error) {
 	if strings.TrimSpace(key) == "" {
-		return "", ErrInvalidKey
+		return "", storage.ErrInvalidKey
 	}
 
-	var options PresignOptions
+	var options storage.PresignOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -384,7 +397,7 @@ func (s *S3Storage) PresignPut(ctx context.Context, key string, ttl time.Duratio
 	return req.URL, nil
 }
 
-func (s *S3Storage) extractObjectInfo(key string, contentLength *int64, contentType, etag *string, lastModified *time.Time, metadata map[string]string) ObjectInfo {
+func (s *S3Storage) extractObjectInfo(key string, contentLength *int64, contentType, etag *string, lastModified *time.Time, metadata map[string]string) storage.ObjectInfo {
 	var size int64
 	if contentLength != nil {
 		size = *contentLength
@@ -402,7 +415,7 @@ func (s *S3Storage) extractObjectInfo(key string, contentLength *int64, contentT
 		lm = *lastModified
 	}
 
-	return ObjectInfo{
+	return storage.ObjectInfo{
 		Key:          key,
 		Size:         size,
 		ContentType:  ct,

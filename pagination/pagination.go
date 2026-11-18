@@ -5,8 +5,6 @@ import (
 	"math"
 	"net/http"
 	"strconv"
-
-	"gorm.io/gorm"
 )
 
 // Pagination holds paging metadata for offset and cursor responses.
@@ -39,10 +37,18 @@ func ParseOffsetParams(r *http.Request) OffsetParams {
 	return OffsetParams{Page: page, PageSize: pageSize}
 }
 
-// Apply applies LIMIT and OFFSET clauses to db based on the offset params.
-func (p OffsetParams) Apply(db *gorm.DB) *gorm.DB {
-	offset := (p.Page - 1) * p.PageSize
-	return db.Limit(p.PageSize).Offset(offset)
+// Offset returns the SQL OFFSET for the current page and page size.
+func (p OffsetParams) Offset() int {
+	return (p.Page - 1) * p.PageSize
+}
+
+// Apply applies LIMIT and OFFSET clauses to any query builder (such as *gorm.DB)
+// implementing Limit(int) T and Offset(int) T.
+func Apply[T interface {
+	Limit(int) T
+	Offset(int) T
+}](p OffsetParams, db T) T {
+	return db.Limit(p.PageSize).Offset(p.Offset())
 }
 
 // ToPagination builds a Pagination from the total record count.

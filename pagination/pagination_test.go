@@ -4,11 +4,23 @@ import (
 	"net/http"
 	"testing"
 
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
-
 	"github.com/dhawalhost/gokit/pagination"
 )
+
+type mockQueryBuilder struct {
+	limit  int
+	offset int
+}
+
+func (m *mockQueryBuilder) Limit(limit int) *mockQueryBuilder {
+	m.limit = limit
+	return m
+}
+
+func (m *mockQueryBuilder) Offset(offset int) *mockQueryBuilder {
+	m.offset = offset
+	return m
+}
 
 func makeRequest(query string) *http.Request {
 	r, _ := http.NewRequest(http.MethodGet, "/?"+query, nil)
@@ -163,17 +175,17 @@ func TestCursorParams_TableDriven(t *testing.T) {
 }
 
 func TestApply_TableDriven(t *testing.T) {
-	db := &gorm.DB{
-		Config: &gorm.Config{DryRun: true},
-	}
-	db.Statement = &gorm.Statement{
-		DB:      db,
-		Clauses: map[string]clause.Clause{},
-	}
+	qb := &mockQueryBuilder{}
 
 	p := pagination.OffsetParams{Page: 2, PageSize: 10}
-	result := p.Apply(db)
+	result := pagination.Apply(p, qb)
 	if result == nil {
 		t.Fatal("Apply returned nil")
+	}
+	if result.limit != 10 {
+		t.Errorf("expected limit=10, got %d", result.limit)
+	}
+	if result.offset != 10 {
+		t.Errorf("expected offset=10, got %d", result.offset)
 	}
 }

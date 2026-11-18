@@ -157,7 +157,7 @@ func TestMultitenancy_GORMScope(t *testing.T) {
 
 	// Query with Scope
 	var org1Docs []TenantDocument
-	if err := db.GORM.Scopes(multitenancy.Scope("org-1")).Find(&org1Docs).Error; err != nil {
+	if err := db.GORM.Scopes(multitenancy.Scope[*gorm.DB]("org-1")).Find(&org1Docs).Error; err != nil {
 		t.Fatalf("Scope find: %v", err)
 	}
 	if len(org1Docs) != 1 || org1Docs[0].ID != "d1" {
@@ -167,7 +167,7 @@ func TestMultitenancy_GORMScope(t *testing.T) {
 	// Query with ScopeFromContext
 	tenantCtx := multitenancy.WithTenantID(ctx, "org-2")
 	var org2Docs []TenantDocument
-	if err := db.GORM.WithContext(tenantCtx).Scopes(multitenancy.ScopeFromContext(tenantCtx)).Find(&org2Docs).Error; err != nil {
+	if err := db.GORM.WithContext(tenantCtx).Scopes(multitenancy.ScopeFromContext[*gorm.DB](tenantCtx)).Find(&org2Docs).Error; err != nil {
 		t.Fatalf("ScopeFromContext find: %v", err)
 	}
 	if len(org2Docs) != 1 || org2Docs[0].ID != "d2" {

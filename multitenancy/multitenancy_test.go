@@ -2,6 +2,8 @@ package multitenancy_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -10,8 +12,6 @@ import (
 
 	"github.com/dhawalhost/gokit/middleware"
 	"github.com/dhawalhost/gokit/multitenancy"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type mockCache struct {
@@ -453,43 +453,149 @@ func TestContextScopedCache_TableDriven(t *testing.T) {
 	}
 }
 
+type mockWhereDB struct {
+	queries []string
+	args    [][]any
+}
+
+func (m *mockWhereDB) Where(query any, args ...any) *mockWhereDB {
+	if s, ok := query.(string); ok {
+		m.queries = append(m.queries, s)
+	}
+	m.args = append(m.args, args)
+	return m
+}
+
+type mockSQLTx struct {
+	query string
+	args  []any
+	err   error
+}
+
+func (m *mockSQLTx) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	m.query = query
+	m.args = args
+	return nil, m.err
+}
+
+type mockORMExec struct {
+	ctx   context.Context
+	query string
+	args  []any
+}
+
+type mockORMDB struct {
+	ctx   context.Context
+	execs *[]mockORMExec
+	Error error
+}
+
+func (m *mockORMDB) WithContext(ctx context.Context) *mockORMDB {
+	clone := *m
+	clone.ctx = ctx
+	return &clone
+}
+
+func (m *mockORMDB) Exec(query string, args ...any) *mockORMDB {
+	if m.execs != nil {
+		*m.execs = append(*m.execs, mockORMExec{ctx: m.ctx, query: query, args: args})
+	}
+	return m
+}
+
+func (m *mockORMDB) Transaction(fc func(tx *mockORMDB) error, _ ...*sql.TxOptions) error {
+	return fc(m)
+}
+
 func TestScope_TableDriven(t *testing.T) {
 	tests := []struct {
-		name     string
-		tenantID string
-		ctx      context.Context
+		name      string
+		tenantID  string
+		ctx       context.Context
+		wantWhere int
 	}{
 		{
-			name:     "Scope returns valid modifier",
-			tenantID: "tenant-100",
-			ctx:      context.Background(),
+			name:      "Scope applies tenant_id predicate",
+			tenantID:  "tenant-100",
+			ctx:       context.Background(),
+			wantWhere: 1,
 		},
 		{
-			name:     "ScopeFromContext with tenant in context",
-			tenantID: "tenant-200",
-			ctx:      multitenancy.WithTenantID(context.Background(), "tenant-200"),
+			name:      "ScopeFromContext with tenant in context applies predicate",
+			tenantID:  "tenant-200",
+			ctx:       multitenancy.WithTenantID(context.Background(), "tenant-200"),
+			wantWhere: 1,
 		},
 		{
-			name:     "ScopeFromContext without tenant in context",
-			tenantID: "",
-			ctx:      context.Background(),
+			name:      "ScopeFromContext without tenant in context is no-op",
+			tenantID:  "",
+			ctx:       context.Background(),
+			wantWhere: 0,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			db := &gorm.DB{Config: &gorm.Config{}, Statement: &gorm.Statement{Clauses: make(map[string]clause.Clause)}}
-			var scoped *gorm.DB
-			if tc.tenantID != "" && tc.ctx == context.Background() {
-				scoped = multitenancy.Scope(tc.tenantID)(db)
+			db := &mockWhereDB{}
+			var scoped *mockWhereDB
+			if tc.tenantID != "" && tc.name == "Scope applies tenant_id predicate" {
+				scoped = multitenancy.Scope[*mockWhereDB](tc.tenantID)(db)
 			} else {
-				scoped = multitenancy.ScopeFromContext(tc.ctx)(db)
+				scoped = multitenancy.ScopeFromContext[*mockWhereDB](tc.ctx)(db)
 			}
 			if scoped == nil {
 				t.Fatal("expected non-nil scoped db")
 			}
+			if len(scoped.queries) != tc.wantWhere {
+				t.Fatalf("expected %d Where calls, got %d", tc.wantWhere, len(scoped.queries))
+			}
 		})
 	}
+}
+
+func TestSetRLS_And_WithTenantTx(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("sql ExecContext handle sets transaction-local config", func(t *testing.T) {
+		tx := &mockSQLTx{}
+		if err := multitenancy.SetRLS(ctx, tx, "tenant-sql"); err != nil {
+			t.Fatalf("SetRLS sql failed: %v", err)
+		}
+		if tx.query != "SELECT set_config($1, $2, true)" {
+			t.Fatalf("unexpected query %q", tx.query)
+		}
+		if len(tx.args) != 2 || tx.args[0] != multitenancy.DefaultRLSVariable || tx.args[1] != "tenant-sql" {
+			t.Fatalf("unexpected args %+v", tx.args)
+		}
+	})
+
+	t.Run("ORM handle WithTenantTx sets RLS and propagates callback error", func(t *testing.T) {
+		var execs []mockORMExec
+		db := &mockORMDB{execs: &execs}
+		called := false
+		err := multitenancy.WithTenantTx(ctx, db, "tenant-orm", func(tx *mockORMDB) error {
+			called = tx != nil
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithTenantTx failed: %v", err)
+		}
+		if !called || len(execs) != 1 {
+			t.Fatalf("expected callback call and 1 RLS exec, got called=%v execs=%d", called, len(execs))
+		}
+		if execs[0].query != "SELECT set_config(?, ?, true)" {
+			t.Fatalf("unexpected ORM RLS query %q", execs[0].query)
+		}
+		if len(execs[0].args) != 2 || execs[0].args[0] != multitenancy.DefaultRLSVariable || execs[0].args[1] != "tenant-orm" {
+			t.Fatalf("unexpected ORM RLS args %+v", execs[0].args)
+		}
+
+		wantErr := errors.New("tx failed")
+		dbErr := &mockORMDB{execs: &execs, Error: wantErr}
+		if gotErr := multitenancy.WithTenantTx(ctx, dbErr, "tenant-orm", func(_ *mockORMDB) error { return nil }); !errors.Is(gotErr, wantErr) {
+			t.Fatalf("expected error %v, got %v", wantErr, gotErr)
+		}
+	})
 }
 
 func TestScopedCache_EmptyKeys_TableDriven(t *testing.T) {

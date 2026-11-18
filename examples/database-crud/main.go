@@ -191,7 +191,7 @@ func (h *userHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var users []User
-	if err := pg.Apply(h.db.GORM).Order("id asc").Find(&users).Error; err != nil {
+	if err := pagination.Apply(pg, h.db.GORM).Order("id asc").Find(&users).Error; err != nil {
 		apperrors.WriteError(w, r, apperrors.Internal("failed to list users"))
 		return
 	}

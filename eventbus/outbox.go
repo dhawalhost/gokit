@@ -4,18 +4,17 @@ import (
 	"context"
 	"time"
 
-	"github.com/dhawalhost/gokit/outbox"
 	"github.com/google/uuid"
 )
 
-// OutboxPublisherAdapter adapts an eventbus.Publisher into an outbox.Publisher.
+// OutboxPublisherAdapter adapts an eventbus.Publisher into an outbox-compatible Publisher.
 type OutboxPublisherAdapter struct {
 	publisher Publisher
 }
 
-// NewOutboxPublisher creates an outbox.Publisher that forwards messages dispatched by
+// NewOutboxPublisher creates an adapter that forwards messages dispatched by
 // the transactional outbox relay directly into the EventBus.
-func NewOutboxPublisher(publisher Publisher) outbox.Publisher {
+func NewOutboxPublisher(publisher Publisher) *OutboxPublisherAdapter {
 	return &OutboxPublisherAdapter{publisher: publisher}
 }
 
