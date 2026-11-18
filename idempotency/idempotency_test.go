@@ -18,6 +18,7 @@ import (
 	"github.com/dhawalhost/gokit/cache"
 	"github.com/dhawalhost/gokit/config"
 	"github.com/dhawalhost/gokit/idempotency"
+	"github.com/dhawalhost/gokit/multitenancy"
 )
 
 type mockCache struct {
@@ -454,6 +455,142 @@ func TestGK01_ConcurrentIdempotencyLock(t *testing.T) {
 		}
 		if ok3 {
 			t.Fatal("GK-01: stale unlock deleted store2's active lock")
+		}
+	})
+}
+
+func TestGK12_IdempotencyHardening(t *testing.T) {
+	t.Run("2 MiB body returns 413 Request Entity Too Large", func(t *testing.T) {
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: idempotency.NewInMemoryStore(),
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		largeBody := bytes.Repeat([]byte("x"), 2<<20)
+		req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(largeBody))
+		req.Header.Set("Idempotency-Key", "gk12-large")
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("GK-12: expected 413 Request Entity Too Large, got %d", rec.Code)
+		}
+	})
+
+	t.Run("same key from two tenants does not collide", func(t *testing.T) {
+		var runs atomic.Int32
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: idempotency.NewInMemoryStore(),
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			runs.Add(1)
+			w.WriteHeader(http.StatusCreated)
+		}))
+
+		for _, tenant := range []string{"tenant-a", "tenant-b"} {
+			req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"item":1}`))
+			req.Header.Set("Idempotency-Key", "shared-key-1")
+			req = req.WithContext(multitenancy.WithTenantID(req.Context(), tenant))
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("GK-12 (%s): expected 201, got %d", tenant, rec.Code)
+			}
+			if rec.Header().Get("Idempotent-Replayed") == "true" {
+				t.Fatalf("GK-12 (%s): must not replay another tenant's response", tenant)
+			}
+		}
+
+		if runs.Load() != 2 {
+			t.Fatalf("GK-12: expected 2 executions across 2 tenants, got %d", runs.Load())
+		}
+	})
+
+	t.Run("same key from two subjects in same tenant does not collide", func(t *testing.T) {
+		var runs atomic.Int32
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: idempotency.NewInMemoryStore(),
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			runs.Add(1)
+			w.WriteHeader(http.StatusCreated)
+		}))
+
+		for _, sub := range []string{"user-1", "user-2"} {
+			req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"item":1}`))
+			req.Header.Set("Idempotency-Key", "shared-subj-key")
+			ctx := multitenancy.WithTenantID(req.Context(), "tenant-a")
+			ctx = multitenancy.WithClaimsMap(ctx, map[string]any{"sub": sub})
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != http.StatusCreated || rec.Header().Get("Idempotent-Replayed") == "true" {
+				t.Fatalf("GK-12 (%s): unexpected replay across subjects", sub)
+			}
+		}
+
+		if runs.Load() != 2 {
+			t.Fatalf("GK-12: expected 2 executions across 2 subjects, got %d", runs.Load())
+		}
+	})
+
+	t.Run("store down returns 503 Service Unavailable", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rc, err := cache.NewRedis(config.RedisConfig{Addr: mr.Addr()})
+		if err != nil {
+			t.Fatalf("NewRedis: %v", err)
+		}
+		defer func() { _ = rc.Close() }()
+		mr.Close()
+
+		var handlerCalled atomic.Bool
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: idempotency.NewCacheStore(rc),
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled.Store(true)
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amt":10}`))
+		req.Header.Set("Idempotency-Key", "gk12-store-down")
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GK-12: expected 503 when store is down, got %d", rec.Code)
+		}
+		if handlerCalled.Load() {
+			t.Fatal("GK-12: handler must not execute when store is down")
+		}
+	})
+
+	t.Run("500 response is not cached or replayed", func(t *testing.T) {
+		var attempts atomic.Int32
+		mw := idempotency.Middleware(idempotency.Config{
+			Store: idempotency.NewInMemoryStore(),
+		})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if attempts.Add(1) == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("boom"))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte("ok"))
+		}))
+
+		req1 := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amt":10}`))
+		req1.Header.Set("Idempotency-Key", "gk12-5xx")
+		rec1 := httptest.NewRecorder()
+		mw.ServeHTTP(rec1, req1)
+		if rec1.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 on first call, got %d", rec1.Code)
+		}
+
+		req2 := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amt":10}`))
+		req2.Header.Set("Idempotency-Key", "gk12-5xx")
+		rec2 := httptest.NewRecorder()
+		mw.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusCreated {
+			t.Fatalf("GK-12: expected 201 on retry after 500, got %d", rec2.Code)
 		}
 	})
 }

@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/dhawalhost/gokit/cache"
+	"github.com/dhawalhost/gokit/multitenancy"
 )
 
 // Response captures a cached HTTP response to replay for idempotent requests.
@@ -58,6 +60,14 @@ type Config struct {
 	EnforceMethods []string
 	// ReplayedHeader is the HTTP header set on replayed responses (defaults to "Idempotent-Replayed").
 	ReplayedHeader string
+	// MaxBodyBytes limits the request body size read for fingerprinting (defaults to 1 MiB).
+	// Set to a negative value to disable the limit.
+	MaxBodyBytes int64
+	// Cache5xx controls whether 5xx responses are cached and replayed (defaults to false).
+	Cache5xx bool
+	// KeyFunc derives the storage key from the request and header value.
+	// Defaults to scoping by tenant ID and authenticated subject plus header value.
+	KeyFunc func(r *http.Request, rawKey string) string
 }
 
 // InMemoryStore provides a thread-safe, memory-backed idempotency store with auto-cleanup.
@@ -167,7 +177,10 @@ func NewCacheStore(c cache.Cache) *CacheStore {
 func (c *CacheStore) Get(ctx context.Context, key string) (*Response, bool, error) {
 	val, err := c.cache.Get(ctx, "idemp:resp:"+key)
 	if err != nil {
-		return nil, false, nil
+		if errors.Is(err, redis.Nil) || strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return nil, false, nil
+		}
+		return nil, false, err
 	}
 	var resp Response
 	if err := json.Unmarshal([]byte(val), &resp); err != nil {
@@ -279,6 +292,22 @@ func computeFingerprint(r *http.Request, body []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func defaultScopedKey(r *http.Request, rawKey string) string {
+	tenant, _ := multitenancy.FromContext(r.Context())
+	var subject string
+	if claims, ok := multitenancy.ClaimsMapFromContext(r.Context()); ok {
+		if sub, ok := claims["sub"].(string); ok {
+			subject = strings.TrimSpace(sub)
+		} else if uid, ok := claims["user_id"].(string); ok {
+			subject = strings.TrimSpace(uid)
+		}
+	}
+	if tenant == "" && subject == "" {
+		return rawKey
+	}
+	return tenant + ":" + subject + ":" + rawKey
+}
+
 // Middleware returns an HTTP middleware enforcing idempotency.
 func Middleware(cfg Config) func(http.Handler) http.Handler {
 	if cfg.Header == "" {
@@ -298,6 +327,14 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 	}
 	if cfg.ReplayedHeader == "" {
 		cfg.ReplayedHeader = "Idempotent-Replayed"
+	}
+	maxBodyBytes := cfg.MaxBodyBytes
+	if maxBodyBytes == 0 {
+		maxBodyBytes = 1 << 20 // 1 MiB
+	}
+	keyFunc := cfg.KeyFunc
+	if keyFunc == nil {
+		keyFunc = defaultScopedKey
 	}
 
 	methodMap := make(map[string]bool, len(cfg.EnforceMethods))
@@ -320,12 +357,23 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Read request body for fingerprinting and re-attach for downstream handler
+			// Read bounded request body for fingerprinting and re-attach for downstream handler
 			var bodyBytes []byte
 			if r.Body != nil {
+				bodyReader := io.ReadCloser(r.Body)
+				if maxBodyBytes > 0 {
+					bodyReader = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+				}
 				var err error
-				bodyBytes, err = io.ReadAll(r.Body)
+				bodyBytes, err = io.ReadAll(bodyReader)
+				_ = bodyReader.Close()
 				if err != nil {
+					var maxErr *http.MaxBytesError
+					if errors.As(err, &maxErr) {
+						writeJSONError(w, http.StatusRequestEntityTooLarge,
+							`{"code":"PAYLOAD_TOO_LARGE","message":"request body exceeds maximum allowed size"}`)
+						return
+					}
 					writeJSONError(w, http.StatusBadRequest, `{"code":"BAD_REQUEST","message":"unable to read request body"}`)
 					return
 				}
@@ -333,13 +381,14 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 			}
 
 			fingerprint := computeFingerprint(r, bodyBytes)
+			scopedKey := keyFunc(r, idempotencyKey)
 			ctx := r.Context()
 
 			// Check if we already have a completed response
-			cachedResp, found, err := cfg.Store.Get(ctx, idempotencyKey)
+			cachedResp, found, err := cfg.Store.Get(ctx, scopedKey)
 			if err != nil {
-				// Storage failure; proceed without idempotency guarantee
-				next.ServeHTTP(w, r)
+				writeJSONError(w, http.StatusServiceUnavailable,
+					`{"code":"IDEMPOTENCY_STORE_UNAVAILABLE","message":"idempotency store unavailable"}`)
 				return
 			}
 
@@ -365,18 +414,23 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 			}
 
 			// Acquire concurrent lock
-			locked, err := cfg.Store.Lock(ctx, idempotencyKey, cfg.LockTimeout)
-			if err != nil || !locked {
+			locked, err := cfg.Store.Lock(ctx, scopedKey, cfg.LockTimeout)
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable,
+					`{"code":"IDEMPOTENCY_STORE_UNAVAILABLE","message":"idempotency store unavailable"}`)
+				return
+			}
+			if !locked {
 				writeJSONError(w, http.StatusConflict,
 					`{"code":"IDEMPOTENCY_CONFLICT","message":"a request with this idempotency key is currently in progress"}`)
 				return
 			}
 
-			// Ensure lock is released in case of panic or unhandled error
+			// Ensure lock is released in case of panic, 5xx skip, or unhandled error
 			var completed bool
 			defer func() {
 				if !completed {
-					_ = cfg.Store.Unlock(context.Background(), idempotencyKey)
+					_ = cfg.Store.Unlock(context.Background(), scopedKey)
 				}
 			}()
 
@@ -387,13 +441,18 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rec, r)
 
+			// Skip caching 5xx server errors unless explicitly enabled
+			if rec.statusCode >= http.StatusInternalServerError && !cfg.Cache5xx {
+				return
+			}
+
 			// Cache response on completion
 			headersCopy := make(map[string][]string)
 			for k, v := range rec.Header() {
 				headersCopy[k] = v
 			}
 
-			saveErr := cfg.Store.Save(context.Background(), idempotencyKey, &Response{
+			saveErr := cfg.Store.Save(context.Background(), scopedKey, &Response{
 				Fingerprint: fingerprint,
 				StatusCode:  rec.statusCode,
 				Headers:     headersCopy,
