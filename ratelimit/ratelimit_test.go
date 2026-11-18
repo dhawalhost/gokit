@@ -2,8 +2,12 @@ package ratelimit_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/dhawalhost/gokit/ratelimit"
 )
@@ -150,4 +154,59 @@ func TestAllowLimiterParamUpdate(t *testing.T) {
 		t.Fatalf("second Allow: %v", err)
 	}
 	store.Stop()
+}
+
+func TestGK15_RateLimitRaceDoubleStopAndGCRA(t *testing.T) {
+	t.Run("concurrent Allow and double Stop are race-free", func(t *testing.T) {
+		store := ratelimit.NewInMemoryStoreWithTTL(50 * time.Millisecond)
+		ctx := context.Background()
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, _ = store.Allow(ctx, "race-key", 100, 50)
+			}()
+		}
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			store.Stop()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			store.Stop()
+		}()
+		close(start)
+		wg.Wait()
+	})
+
+	t.Run("RedisStore uses constant-size GCRA string key instead of growing sorted set", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		defer func() { _ = rdb.Close() }()
+
+		store := ratelimit.NewRedisStore(rdb, time.Second)
+		ctx := context.Background()
+
+		for i := 0; i < 200; i++ {
+			ok, err := store.Allow(ctx, "gcra-key", 10000, 500)
+			if err != nil || !ok {
+				t.Fatalf("Allow %d failed: ok=%v err=%v", i, ok, err)
+			}
+		}
+
+		keyType, err := rdb.Type(ctx, "rl:gcra-key").Result()
+		if err != nil {
+			t.Fatalf("Type failed: %v", err)
+		}
+		if keyType != "string" {
+			t.Fatalf("GK-15: expected constant-space GCRA string key, got Redis type %q", keyType)
+		}
+	})
 }
